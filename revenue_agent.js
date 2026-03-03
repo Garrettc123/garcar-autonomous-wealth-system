@@ -10,6 +10,13 @@ const axios = require('axios');
 const s3 = new AWS.S3();
 const LINEAR_API = 'https://api.linear.app/graphql';
 
+// Multi-product pricing tiers
+const PLANS = {
+  basic:      { priceId: process.env.STRIPE_PRICE_BASIC,      mrr: 49,  label: 'Basic' },
+  pro:        { priceId: process.env.STRIPE_PRICE_PRO,        mrr: 99,  label: 'Pro' },
+  enterprise: { priceId: process.env.STRIPE_PRICE_ENTERPRISE, mrr: 299, label: 'Enterprise' }
+};
+
 class RevenueAgent {
   constructor() {
     this.revenueToday = 0;
@@ -59,7 +66,8 @@ class RevenueAgent {
     }
   }
 
-  async processLeadToCustomer(lead) {
+  async processLeadToCustomer(lead, plan = 'pro') {
+    const planConfig = PLANS[plan] || PLANS.pro;
     try {
       // Create Stripe customer
       const customer = await stripe.customers.create({
@@ -69,7 +77,8 @@ class RevenueAgent {
           company: lead.company || 'Unknown',
           title: lead.title || 'Unknown',
           source: 'apollo-auto-acquisition',
-          acquired_date: new Date().toISOString()
+          acquired_date: new Date().toISOString(),
+          plan: plan
         }
       });
 
@@ -90,34 +99,38 @@ class RevenueAgent {
         }
       });
 
-      // Create subscription with 14-day trial
-      const subscription = await stripe.subscriptions.create({
+      // Build subscription params
+      const subParams = {
         customer: customer.id,
-        items: [{
-          price: process.env.STRIPE_PRICE_ID  // Enterprise tier: $99/mo
-        }],
         trial_period_days: 14,
         metadata: {
           lead_source: 'apollo',
-          automation: 'garcar-wealth-system'
+          automation: 'garcar-wealth-system',
+          plan: plan
         }
-      });
+      };
+      if (planConfig.priceId) {
+        subParams.items = [{ price: planConfig.priceId }];
+      }
+
+      const subscription = await stripe.subscriptions.create(subParams);
 
       this.conversions.push({
         customer_id: customer.id,
         subscription_id: subscription.id,
         email: lead.email,
-        mrr: 99,
+        plan: plan,
+        mrr: planConfig.mrr,
         status: subscription.status,
         trial_end: new Date(subscription.trial_end * 1000).toISOString()
       });
 
-      this.revenueToday += 99;
+      this.revenueToday += planConfig.mrr;
 
       // Log to Linear
       await this.createLinearTask(
-        `New Customer: ${lead.name}`,
-        `✅ Subscription created\n- Email: ${lead.email}\n- Company: ${lead.company}\n- MRR: $99\n- Trial ends: ${new Date(subscription.trial_end * 1000).toLocaleDateString()}`,
+        `New Customer: ${lead.name} (${planConfig.label})`,
+        `✅ Subscription created\n- Email: ${lead.email}\n- Company: ${lead.company}\n- Plan: ${planConfig.label}\n- MRR: $${planConfig.mrr}\n- Trial ends: ${new Date(subscription.trial_end * 1000).toLocaleDateString()}`,
         'high'
       );
 
@@ -125,7 +138,8 @@ class RevenueAgent {
         success: true,
         customer_id: customer.id,
         subscription_id: subscription.id,
-        mrr: 99
+        plan: plan,
+        mrr: planConfig.mrr
       };
 
     } catch (error) {
@@ -138,6 +152,63 @@ class RevenueAgent {
         'urgent'
       );
 
+      return { success: false, error: error.message };
+    }
+  }
+
+  async upsellCustomer(customerId, currentPlan, targetPlan) {
+    /**
+     * Upgrade an existing customer from one plan to a higher tier.
+     * Basic → Pro, Basic/Pro → Enterprise
+     */
+    const target = PLANS[targetPlan];
+    if (!target) {
+      return { success: false, error: `Unknown target plan: ${targetPlan}` };
+    }
+    if (!target.priceId) {
+      return { success: false, error: `Price ID not configured for plan: ${targetPlan}` };
+    }
+
+    try {
+      // Retrieve current subscriptions
+      const subscriptions = await stripe.subscriptions.list({
+        customer: customerId,
+        status: 'active',
+        limit: 1
+      });
+
+      if (!subscriptions.data.length) {
+        return { success: false, error: 'No active subscription found' };
+      }
+
+      const sub = subscriptions.data[0];
+      const itemId = sub.items.data[0]?.id;
+
+      // Update subscription item to new price (prorated immediately)
+      const updated = await stripe.subscriptions.update(sub.id, {
+        items: [{ id: itemId, price: target.priceId }],
+        proration_behavior: 'create_prorations',
+        metadata: { plan: targetPlan, upgraded_from: currentPlan }
+      });
+
+    const mrrDelta = target.mrr - (PLANS[currentPlan]?.mrr ?? target.mrr);
+      this.revenueToday += mrrDelta;
+
+      await this.createLinearTask(
+        `Upsell Success: ${customerId}`,
+        `⬆️ Upgraded ${currentPlan} → ${targetPlan}\n- MRR delta: +$${mrrDelta}\n- New MRR: $${target.mrr}`,
+        'high'
+      );
+
+      return {
+        success: true,
+        subscription_id: updated.id,
+        from_plan: currentPlan,
+        to_plan: targetPlan,
+        mrr_delta: mrrDelta
+      };
+    } catch (error) {
+      console.error(`Upsell error for ${customerId}:`, error.message);
       return { success: false, error: error.message };
     }
   }
@@ -157,9 +228,11 @@ class RevenueAgent {
 
       case 'customer.subscription.updated':
         if (event.data.object.status === 'active' && event.data.previous_attributes?.status === 'trialing') {
+          const plan = event.data.object.metadata?.plan || 'pro';
+          const mrr = PLANS[plan]?.mrr || 99;
           await this.createLinearTask(
             `Conversion Success: ${event.data.object.customer}`,
-            `🎉 Trial converted to paid subscription!\nMRR: $99`,
+            `🎉 Trial converted to paid subscription!\n- Plan: ${plan}\n- MRR: $${mrr}`,
             'high'
           );
         }
@@ -188,11 +261,22 @@ class RevenueAgent {
   }
 
   async generateRevenueReport() {
+    const planBreakdown = {};
+    for (const [plan, config] of Object.entries(PLANS)) {
+      const planConversions = this.conversions.filter(c => c.plan === plan);
+      planBreakdown[plan] = {
+        count: planConversions.length,
+        mrr: planConversions.reduce((sum, c) => sum + c.mrr, 0),
+        price: config.mrr
+      };
+    }
+
     const report = {
       date: new Date().toISOString(),
       conversions: this.conversions.length,
       revenue_today: this.revenueToday,
       mrr_added: this.revenueToday,
+      plan_breakdown: planBreakdown,
       conversion_rate: this.conversions.length > 0 ? '1-3%' : '0%',
       details: this.conversions
     };
@@ -243,7 +327,9 @@ exports.handler = async (event, context) => {
   const results = [];
 
   for (let lead of leads.slice(0, 20)) {  // Process first 20 leads
-    const result = await agent.processLeadToCustomer(lead);
+    // Determine plan from lead metadata (set by Python scorer) or default to pro
+    const plan = lead.plan || 'pro';
+    const result = await agent.processLeadToCustomer(lead, plan);
     results.push(result);
     
     // Rate limit: 2 requests per second
