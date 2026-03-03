@@ -1,0 +1,136 @@
+name: Deploy Garcar Autonomous Wealth System
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-west-2
+  PYTHON_VERSION: '3.11'
+  NODE_VERSION: '18'
+
+jobs:
+  deploy:
+    name: Deploy to AWS Lambda
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      
+      - name: Package Python Lambda (Orchestrator)
+        run: |
+          mkdir -p build/python
+          pip install -t build/python \
+            boto3 \
+            langchain \
+            openai \
+            stripe \
+            requests
+          cp agent_coordinator.py build/python/
+          cp linear_integration.py build/python/
+          cp lead_acquisition.py build/python/
+          cd build/python
+          zip -r ../orchestrator.zip .
+          cd ../..
+      
+      - name: Package Node.js Lambda (Revenue Agent)
+        run: |
+          mkdir -p build/nodejs
+          cp revenue_agent.js build/nodejs/index.js
+          cp package.json build/nodejs/
+          cd build/nodejs
+          npm install --production
+          zip -r ../revenue_agent.zip .
+          cd ../..
+      
+      - name: Deploy Orchestrator Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name garcar-orchestrator \
+            --zip-file fileb://build/orchestrator.zip \
+            --region ${{ env.AWS_REGION }} || \
+          aws lambda create-function \
+            --function-name garcar-orchestrator \
+            --runtime python3.11 \
+            --role ${{ secrets.LAMBDA_EXECUTION_ROLE_ARN }} \
+            --handler agent_coordinator.lambda_handler \
+            --zip-file fileb://build/orchestrator.zip \
+            --timeout 300 \
+            --memory-size 512 \
+            --region ${{ env.AWS_REGION }}
+      
+      - name: Deploy Revenue Agent Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name garcar-revenue-agent \
+            --zip-file fileb://build/revenue_agent.zip \
+            --region ${{ env.AWS_REGION }} || \
+          aws lambda create-function \
+            --function-name garcar-revenue-agent \
+            --runtime nodejs18.x \
+            --role ${{ secrets.LAMBDA_EXECUTION_ROLE_ARN }} \
+            --handler index.handler \
+            --zip-file fileb://build/revenue_agent.zip \
+            --timeout 300 \
+            --memory-size 512 \
+            --region ${{ env.AWS_REGION }}
+      
+      - name: Update Lambda Environment Variables
+        run: |
+          aws lambda update-function-configuration \
+            --function-name garcar-orchestrator \
+            --environment "Variables={
+              S3_BUCKET=${{ secrets.S3_BUCKET }},
+              STRIPE_SECRET_KEY=${{ secrets.STRIPE_SECRET_KEY }},
+              LINEAR_API_KEY=${{ secrets.LINEAR_API_KEY }},
+              LINEAR_TEAM_ID=${{ secrets.LINEAR_TEAM_ID }},
+              APOLLO_API_KEY=${{ secrets.APOLLO_API_KEY }},
+              OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+            }" \
+            --region ${{ env.AWS_REGION }}
+          
+          aws lambda update-function-configuration \
+            --function-name garcar-revenue-agent \
+            --environment "Variables={
+              S3_BUCKET=${{ secrets.S3_BUCKET }},
+              STRIPE_SECRET_KEY=${{ secrets.STRIPE_SECRET_KEY }},
+              STRIPE_PRICE_ID=${{ secrets.STRIPE_PRICE_ID }},
+              STRIPE_WEBHOOK_SECRET=${{ secrets.STRIPE_WEBHOOK_SECRET }},
+              LINEAR_API_KEY=${{ secrets.LINEAR_API_KEY }},
+              LINEAR_TEAM_ID=${{ secrets.LINEAR_TEAM_ID }}
+            }" \
+            --region ${{ env.AWS_REGION }}
+      
+      - name: Test Deployment
+        run: |
+          aws lambda invoke \
+            --function-name garcar-orchestrator \
+            --region ${{ env.AWS_REGION }} \
+            --payload '{}' \
+            response.json
+          cat response.json
+      
+      - name: Deployment Summary
+        run: |
+          echo "✅ Deployment successful!"
+          echo "Orchestrator: https://console.aws.amazon.com/lambda/home?region=${{ env.AWS_REGION }}#/functions/garcar-orchestrator"
+          echo "Revenue Agent: https://console.aws.amazon.com/lambda/home?region=${{ env.AWS_REGION }}#/functions/garcar-revenue-agent"

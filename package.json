@@ -1,0 +1,29 @@
+{
+  "name": "garcar-autonomous-wealth-system",
+  "version": "1.0.0",
+  "description": "Enterprise autonomous AI wealth generation with Stripe, Linear, and Apollo integration",
+  "main": "revenue_agent.js",
+  "scripts": {
+    "test": "node revenue_agent.js",
+    "deploy": "./deploy.sh"
+  },
+  "keywords": [
+    "autonomous",
+    "ai",
+    "revenue",
+    "stripe",
+    "linear",
+    "apollo",
+    "lambda"
+  ],
+  "author": "Garrett Carrol - Garcar Enterprise",
+  "license": "MIT",
+  "dependencies": {
+    "stripe": "^14.0.0",
+    "aws-sdk": "^2.1530.0",
+    "axios": "^1.6.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
