@@ -17,12 +17,15 @@ from lead_scoring import LeadScoringModel
 from affiliate_system import AffiliateSystem
 from quantum_crypto import HybridCrypto
 from rlhf_agent import RLHFAgent
+from aws_utils import get_s3_client, get_kms_client, get_lambda_client
 
 # Initialize services
 stripe.api_key = os.environ.get('STRIPE_SECRET_KEY')
-s3 = boto3.client('s3')
-kms = boto3.client('kms')
-lambda_client = boto3.client('lambda')
+
+# Use pooled clients for better performance
+s3 = get_s3_client()
+kms = get_kms_client()
+lambda_client = get_lambda_client()
 
 # Initialize integrations
 linear = LinearTracker(os.environ.get('LINEAR_API_KEY'))
@@ -195,10 +198,13 @@ class WealthOrchestrator:
         return charges
     
     def monetize_data(self, leads):
-        """Anonymize and sell lead data to marketplaces"""
+        """Anonymize and sell lead data to marketplaces with optimized encryption"""
         try:
-            # Anonymize via KMS encryption
+            # Anonymize via KMS encryption with batching
             anonymized = []
+
+            # Prepare all data to encrypt
+            clean_data_list = []
             for lead in leads:
                 clean_data = {
                     'industry': lead.get('industry'),
@@ -206,26 +212,41 @@ class WealthOrchestrator:
                     'title_category': lead.get('title'),
                     'tech_stack': lead.get('technologies', [])
                 }
-                
-                encrypted = kms.encrypt(
-                    KeyId=os.environ.get('KMS_KEY_ID'),
-                    Plaintext=json.dumps(clean_data).encode()
-                )['CiphertextBlob']
-                
-                anonymized.append(encrypted)
-            
+                clean_data_list.append(json.dumps(clean_data))
+
+            # Batch encryption using concurrent requests (KMS supports this)
+            import concurrent.futures
+
+            def encrypt_single(data_str):
+                try:
+                    encrypted = kms.encrypt(
+                        KeyId=os.environ.get('KMS_KEY_ID'),
+                        Plaintext=data_str.encode()
+                    )['CiphertextBlob']
+                    return encrypted
+                except Exception as e:
+                    print(f"KMS encryption error: {str(e)}")
+                    return None
+
+            # Use thread pool for concurrent KMS encryption (up to 10 concurrent)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                encrypted_results = list(executor.map(encrypt_single, clean_data_list))
+
+            # Filter out failed encryptions
+            anonymized = [enc for enc in encrypted_results if enc is not None]
+
             # Store for marketplace sale
             s3.put_object(
                 Bucket=os.environ.get('S3_BUCKET', 'garcar-revenue-data'),
                 Key=f'data-marketplace/{datetime.now().isoformat()}.bin',
                 Body=json.dumps([e.hex() for e in anonymized])
             )
-            
-            data_revenue = len(leads) * 0.50  # $0.50 per anonymized record
+
+            data_revenue = len(anonymized) * 0.50  # $0.50 per anonymized record
             self.revenue_today += data_revenue
-            
+
             return f"Data monetized: ${data_revenue}"
-            
+
         except Exception as e:
             print(f"Data monetization error: {str(e)}")
             return "Data monetization failed"

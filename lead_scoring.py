@@ -13,7 +13,9 @@ from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
 import boto3
+from aws_utils import get_s3_client
 
+s3 = get_s3_client()
 S3_MODEL_BUCKET = os.environ.get('S3_BUCKET', 'garcar-revenue-data')
 S3_MODEL_KEY = 'models/lead_scoring_model.pkl'
 
@@ -120,7 +122,6 @@ class LeadScoringModel:
     def _try_load_model(self):
         """Attempt to load a pre-trained model from S3"""
         try:
-            s3 = boto3.client('s3')
             obj = s3.get_object(Bucket=S3_MODEL_BUCKET, Key=S3_MODEL_KEY)
             payload = pickle.loads(obj['Body'].read())
             self.model = payload['model']
@@ -133,7 +134,6 @@ class LeadScoringModel:
     def _save_model(self):
         """Persist the trained model to S3"""
         try:
-            s3 = boto3.client('s3')
             payload = pickle.dumps({'model': self.model, 'scaler': self.scaler})
             s3.put_object(Bucket=S3_MODEL_BUCKET, Key=S3_MODEL_KEY, Body=payload)
             print("✅ Saved lead scoring model to S3")
@@ -196,11 +196,38 @@ class LeadScoringModel:
         return float(prob)
 
     def score_batch(self, leads: List[Dict]) -> List[Dict]:
-        """Score a list of leads and return them sorted by score descending"""
-        scored = []
-        for lead in leads:
-            score = self.score(lead)
-            scored.append({'lead': lead, 'score': round(score, 4)})
+        """Score a list of leads and return them sorted by score descending using vectorized operations"""
+        if not leads:
+            return []
+
+        # Use vectorized scoring when trained model is available
+        if self.is_trained:
+            # Extract all features at once
+            X = np.array([extract_features(lead) for lead in leads])
+            X_scaled = self.scaler.transform(X)
+
+            # Get all probabilities in one batch
+            probs = self.model.predict_proba(X_scaled)[:, 1]
+
+            # Build result list
+            scored = [
+                {'lead': lead, 'score': round(float(prob), 4)}
+                for lead, prob in zip(leads, probs)
+            ]
+        else:
+            # Fall back to heuristic scoring (can also be vectorized)
+            features_matrix = np.array([extract_features(lead) for lead in leads])
+            weights = np.array([0.25, 0.20, 0.15, 0.15, 0.10, 0.05, 0.05, 0.05])
+
+            # Vectorized dot product for all leads at once
+            scores = np.dot(features_matrix, weights)
+
+            scored = [
+                {'lead': lead, 'score': round(float(score), 4)}
+                for lead, score in zip(leads, scores)
+            ]
+
+        # Sort by score descending
         scored.sort(key=lambda x: x['score'], reverse=True)
         return scored
 

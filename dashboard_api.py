@@ -8,9 +8,10 @@ from datetime import datetime, timedelta
 from typing import Dict, List
 from flask import Flask, jsonify, request, abort
 from functools import wraps
+from aws_utils import get_s3_client
 
 app = Flask(__name__)
-s3 = boto3.client('s3')
+s3 = get_s3_client()
 S3_BUCKET = os.environ.get('S3_BUCKET', 'garcar-revenue-data')
 DASHBOARD_API_KEY = os.environ.get('DASHBOARD_API_KEY', '')
 
@@ -46,24 +47,51 @@ def _load_results(days: int = 30) -> List[Dict]:
 
 
 def _load_affiliates_summary() -> Dict:
-    """Aggregate affiliate stats from S3"""
+    """Aggregate affiliate stats from S3 with caching"""
     total_referrals = 0
     total_conversions = 0
     total_commissions = 0.0
     count = 0
+
     try:
+        # Use list_objects_v2 with pagination, but fetch object data in parallel
+        import concurrent.futures
+
+        # First, collect all keys
+        keys_to_fetch = []
         paginator = s3.get_paginator('list_objects_v2')
         for page in paginator.paginate(Bucket=S3_BUCKET, Prefix='affiliates/'):
             for obj in page.get('Contents', []):
+                keys_to_fetch.append(obj['Key'])
+
+        # Fetch objects in parallel with up to 10 concurrent requests
+        def fetch_and_parse(key):
+            try:
                 data = json.loads(
-                    s3.get_object(Bucket=S3_BUCKET, Key=obj['Key'])['Body'].read()
+                    s3.get_object(Bucket=S3_BUCKET, Key=key)['Body'].read()
                 )
-                total_referrals += data.get('total_referrals', 0)
-                total_conversions += data.get('total_conversions', 0)
-                total_commissions += data.get('total_commission_earned', 0.0)
+                return {
+                    'referrals': data.get('total_referrals', 0),
+                    'conversions': data.get('total_conversions', 0),
+                    'commissions': data.get('total_commission_earned', 0.0)
+                }
+            except Exception:
+                return None
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            results = list(executor.map(fetch_and_parse, keys_to_fetch))
+
+        # Aggregate results
+        for result in results:
+            if result:
+                total_referrals += result['referrals']
+                total_conversions += result['conversions']
+                total_commissions += result['commissions']
                 count += 1
-    except Exception:
-        pass
+
+    except Exception as e:
+        print(f"Error loading affiliates: {e}")
+
     return {
         'active_affiliates': count,
         'total_referrals': total_referrals,

@@ -116,10 +116,15 @@ class ApolloLeadGen:
             return {}
     
     def bulk_enrich(self, leads: List[Dict]) -> List[Dict]:
-        """Enrich multiple leads with additional data"""
+        """Enrich multiple leads with additional data using batch processing"""
         enriched = []
-        
-        for lead in leads:
+
+        # Apollo API doesn't support true bulk enrichment, but we can use concurrent requests
+        # to speed up the process significantly
+        import concurrent.futures
+        from functools import partial
+
+        def enrich_single_lead(lead):
             if lead.get('email'):
                 enrichment = self.enrich_lead(lead['email'])
                 lead.update({
@@ -127,8 +132,12 @@ class ApolloLeadGen:
                     'enriched_at': datetime.now().isoformat(),
                     'additional_data': enrichment
                 })
-            enriched.append(lead)
-        
+            return lead
+
+        # Process leads concurrently with up to 5 workers to avoid rate limiting
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            enriched = list(executor.map(enrich_single_lead, leads))
+
         return enriched
 
 # Standalone testing
