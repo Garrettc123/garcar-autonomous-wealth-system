@@ -8,8 +8,9 @@ import random
 import boto3
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
+from aws_utils import get_s3_client
 
-s3 = boto3.client('s3')
+s3 = get_s3_client()
 S3_BUCKET = os.environ.get('S3_BUCKET', 'garcar-revenue-data')
 FEEDBACK_PREFIX = 'rlhf/feedback/'
 WEIGHTS_KEY = 'rlhf/policy_weights.json'
@@ -56,6 +57,9 @@ class RLHFAgent:
     def __init__(self):
         self.weights: Dict[str, float] = self._load_weights()
         self.episode_log: List[Dict] = []
+        self._softmax_cache: Optional[Dict[str, float]] = None
+        self._weights_hash: Optional[str] = None
+        self.feedback_buffer: List[Dict] = []  # Buffer for batching S3 writes
 
     # ------------------------------------------------------------------
     # Policy persistence
@@ -84,12 +88,32 @@ class RLHFAgent:
                 Body=json.dumps(self.weights, indent=2),
                 ContentType='application/json'
             )
+            # Invalidate cache when weights change
+            self._softmax_cache = None
+            self._weights_hash = None
         except Exception as e:
             print(f"⚠️  Could not save weights: {e}")
 
     # ------------------------------------------------------------------
     # Policy API
     # ------------------------------------------------------------------
+
+    def _get_cached_softmax(self) -> Dict[str, float]:
+        """Get cached softmax probabilities or compute and cache if needed"""
+        import hashlib
+
+        # Create hash of current weights
+        weights_str = json.dumps(self.weights, sort_keys=True)
+        current_hash = hashlib.md5(weights_str.encode()).hexdigest()
+
+        # Return cached value if weights haven't changed
+        if self._softmax_cache is not None and self._weights_hash == current_hash:
+            return self._softmax_cache
+
+        # Compute and cache softmax
+        self._softmax_cache = _softmax(self.weights)
+        self._weights_hash = current_hash
+        return self._softmax_cache
 
     def select_action(self, state: Dict, epsilon: float = 0.1) -> str:
         """
@@ -103,7 +127,8 @@ class RLHFAgent:
             # Exploration: random action
             return random.choice(ACTIONS)
 
-        probs = _softmax(self.weights)
+        # Use cached softmax computation
+        probs = self._get_cached_softmax()
         # Context-aware filtering based on state
         available = self._filter_actions(state, probs)
         actions = list(available.keys())
@@ -136,6 +161,7 @@ class RLHFAgent:
                         feedback_source: str = 'automated') -> str:
         """
         Record a human or automated reward signal for an action.
+        Feedback is buffered and written in batches to reduce S3 API calls.
 
         Args:
             action: the action that was taken
@@ -157,28 +183,60 @@ class RLHFAgent:
             'timestamp': datetime.utcnow().isoformat()
         }
         self.episode_log.append(entry)
+        self.feedback_buffer.append(entry)
 
-        # Persist feedback record to S3
-        try:
-            s3.put_object(
-                Bucket=S3_BUCKET,
-                Key=f"{FEEDBACK_PREFIX}{feedback_id}.json",
-                Body=json.dumps(entry, indent=2),
-                ContentType='application/json'
-            )
-        except Exception as e:
-            print(f"⚠️  Could not persist feedback: {e}")
+        # Flush buffer when it reaches 10 items (or call flush_feedback_buffer manually)
+        if len(self.feedback_buffer) >= 10:
+            self.flush_feedback_buffer()
 
         return feedback_id
+
+    def flush_feedback_buffer(self):
+        """Batch write all buffered feedback to S3"""
+        if not self.feedback_buffer:
+            return
+
+        try:
+            import concurrent.futures
+
+            def write_feedback(entry):
+                try:
+                    s3.put_object(
+                        Bucket=S3_BUCKET,
+                        Key=f"{FEEDBACK_PREFIX}{entry['id']}.json",
+                        Body=json.dumps(entry, indent=2),
+                        ContentType='application/json'
+                    )
+                    return True
+                except Exception as e:
+                    print(f"⚠️  Could not persist feedback {entry['id']}: {e}")
+                    return False
+
+            # Write feedback in parallel (up to 5 concurrent writes)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                results = list(executor.map(write_feedback, self.feedback_buffer))
+
+            successful = sum(1 for r in results if r)
+            print(f"✅ Flushed {successful}/{len(self.feedback_buffer)} feedback records to S3")
+
+            # Clear buffer
+            self.feedback_buffer.clear()
+
+        except Exception as e:
+            print(f"⚠️  Error flushing feedback buffer: {e}")
 
     def update_policy(self) -> Dict:
         """
         Apply policy gradient (REINFORCE) update using episode log.
         Positive rewards increase action weight; negative rewards decrease it.
+        Flushes any buffered feedback before updating.
 
         Returns:
             dict with update statistics
         """
+        # Flush any remaining buffered feedback
+        self.flush_feedback_buffer()
+
         if not self.episode_log:
             return {'updated': False, 'reason': 'No feedback in episode log'}
 
