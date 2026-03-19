@@ -1,0 +1,133 @@
+name: 🚀 Garcar Master Orchestrator — All Systems
+# THE main workflow. Runs every weekday at 7 AM CDT (12:00 UTC).
+# Executes ALL 8 subsystems in sequence:
+#   1. Lead pipeline (Apollo → score → nurture)
+#   2. Multi-channel outreach (email + SMS)
+#   3. Revenue processing (Stripe + affiliate)
+#   4. AI agent coordination + RLHF self-improvement
+#   5. Wealth allocation
+#   6. Linear task sync
+#   7. Secrets self-heal
+#   8. Dashboard metrics push to S3
+# After that: performance amplifier tunes params for next cycle.
+# After that: system monitor checks health + self-heals.
+# After that: revenue compounding multiplies every payment 5x.
+
+on:
+  schedule:
+    - cron: '0 12 * * 1-5'   # 7 AM CDT Mon-Fri
+  push:
+    branches: [main]
+    paths:
+      - 'orchestrator_master.py'
+      - 'performance_amplifier.py'
+      - 'system_monitor.py'
+      - 'revenue_compounding_loop.py'
+  workflow_dispatch:
+    inputs:
+      cycle_count:
+        description: 'Number of cycles to run (default 1)'
+        required: false
+        default: '1'
+
+permissions:
+  id-token: write
+  contents: read
+  secrets: write
+
+jobs:
+  orchestrate:
+    name: Run All Systems
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Auth: OIDC first, static key fallback ──
+      - name: AWS Auth (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/garcar-github-actions-role
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+        continue-on-error: true
+
+      - name: AWS Auth (fallback)
+        if: env.AWS_ACCESS_KEY_ID == ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION || 'us-east-1' }}
+        continue-on-error: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Python deps
+        run: |
+          pip install -r requirements.txt -q
+          pip install boto3 pynacl requests stripe openai twilio -q
+          npm install 2>/dev/null || true
+
+      # ── Step 1: Secrets sync (runs before everything) ──
+      - name: 🔐 Sync secrets from SSM
+        env:
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          AWS_REGION:        ${{ secrets.AWS_REGION || 'us-east-1' }}
+        run: python secrets_provisioner.py
+
+      # ── Step 2: Master orchestrator (all 8 subsystems) ──
+      - name: 🤖 Run master orchestrator
+        env:
+          GITHUB_TOKEN:       ${{ secrets.GITHUB_TOKEN }}
+          AWS_REGION:         ${{ secrets.AWS_REGION || 'us-east-1' }}
+          OPENAI_API_KEY:     ${{ secrets.OPENAI_API_KEY }}
+          STRIPE_SECRET_KEY:  ${{ secrets.STRIPE_SECRET_KEY }}
+          APOLLO_API_KEY:     ${{ secrets.APOLLO_API_KEY }}
+          LINEAR_API_KEY:     ${{ secrets.LINEAR_API_KEY }}
+        run: |
+          CYCLES=${{ github.event.inputs.cycle_count || '1' }}
+          for i in $(seq 1 $CYCLES); do
+            echo "=== Cycle $i of $CYCLES ==="
+            python orchestrator_master.py
+          done
+
+      # ── Step 3: Revenue compounding (5x multiplier) ──
+      - name: 💰 Revenue compounding loop
+        env:
+          AWS_REGION:        ${{ secrets.AWS_REGION || 'us-east-1' }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+        run: python revenue_compounding_loop.py
+
+      # ── Step 4: Performance amplifier (auto-tune params) ──
+      - name: 📈 Performance amplifier
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+        run: python performance_amplifier.py
+
+      # ── Step 5: System monitor (self-healing health check) ──
+      - name: 🩺 System monitor
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+        run: python system_monitor.py
+
+      # ── Summary ──
+      - name: 📊 Cycle summary
+        run: |
+          echo "✅ Garcar Master Orchestrator complete"
+          echo "   All 5 multiplier stages ran:"
+          echo "   1. Lead pipeline"
+          echo "   2. Multi-channel outreach"
+          echo "   3. Revenue processing + compounding"
+          echo "   4. Performance amplification"
+          echo "   5. System self-healing"
+          echo ""
+          echo "   Next run: tomorrow 7 AM CDT"
+          echo "   Monitor: https://github.com/${{ github.repository }}/actions"
