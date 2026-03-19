@@ -2,6 +2,7 @@
 
 # AWS SDK
 boto3>=1.34.0
+botocore>=1.34.0
 
 # AI/ML and Agent Orchestration
 langchain>=0.1.0
@@ -12,6 +13,11 @@ stripe>=8.0.0
 
 # HTTP and API
 requests>=2.31.0
+httpx>=0.27.0
+
+# FastAPI Dashboard
+fastapi>=0.110.0
+uvicorn>=0.29.0
 
 # Data and Utilities
 python-dotenv>=1.0.0
@@ -23,5 +29,9 @@ numpy>=1.26.0
 # SMS Outreach
 twilio>=8.0.0
 
-# Real-time Dashboard API
-flask>=3.0.0
+# Secrets provisioning
+pynacl>=1.5.0
+
+# Testing
+pytest>=8.0.0
+pytest-cov>=4.1.0

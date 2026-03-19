@@ -7,7 +7,15 @@ import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
-ses = boto3.client('ses', region_name=os.environ.get('AWS_REGION', 'us-east-1'))
+# ── SES client is lazy-initialised to avoid crash on import without credentials
+_ses_client = None
+
+def _get_ses():
+    global _ses_client
+    if _ses_client is None:
+        _ses_client = boto3.client('ses', region_name=os.environ.get('AWS_REGION', 'us-east-1'))
+    return _ses_client
+
 
 NURTURE_SEQUENCES = {
     'trial_day_0': {
@@ -145,25 +153,45 @@ EMAIL_TEMPLATES = {
 
 class EmailNurtureSequencer:
     def __init__(self):
-        self.sender = os.environ.get('SES_SENDER_EMAIL', 'noreply@garcar.io')
+        self.sender       = os.environ.get('SES_SENDER_EMAIL', 'noreply@garcar.io')
         self.dashboard_url = os.environ.get('DASHBOARD_URL', 'https://app.garcar.io/dashboard')
-        self.upgrade_url = os.environ.get('UPGRADE_URL', 'https://app.garcar.io/upgrade')
+        self.upgrade_url   = os.environ.get('UPGRADE_URL',   'https://app.garcar.io/upgrade')
+
+    def _safe_format(self, template_str: str, context: Dict) -> str:
+        """Format template string; replace any missing keys with empty string instead of crashing."""
+        import string
+        formatter = string.Formatter()
+        result = []
+        for literal, field_name, fmt_spec, conversion in formatter.parse(template_str):
+            result.append(literal)
+            if field_name is not None:
+                val = context.get(field_name, '')
+                result.append(formatter.format_field(val, fmt_spec))
+        return ''.join(result)
 
     def _render_template(self, template_key: str, context: Dict) -> Dict:
-        """Render email template with context variables"""
+        """Render email template with context variables — safe against missing keys."""
         template = EMAIL_TEMPLATES.get(template_key, {})
-        context.setdefault('dashboard_url', self.dashboard_url)
-        context.setdefault('upgrade_url', self.upgrade_url)
-        context.setdefault('plan_name', 'Pro')
+        ctx = {
+            'dashboard_url': self.dashboard_url,
+            'upgrade_url':   self.upgrade_url,
+            'plan_name':     'Pro',
+            'name':          'there',
+        }
+        ctx.update(context)  # caller values override defaults
 
-        html = template.get('html', '').format(**context)
-        text = template.get('text', '').format(**context)
+        html = self._safe_format(template.get('html', ''), ctx)
+        text = self._safe_format(template.get('text', ''), ctx)
         return {'html': html, 'text': text}
 
     def send_email(self, to_email: str, subject: str, html_body: str, text_body: str) -> Dict:
         """Send a single email via AWS SES"""
+        dry_run = os.environ.get('DRY_RUN', 'false').lower() == 'true'
+        if dry_run:
+            print(f"[DRY RUN] Would send '{subject}' to {to_email}")
+            return {'success': True, 'dry_run': True, 'message_id': 'dry-run'}
         try:
-            response = ses.send_email(
+            response = _get_ses().send_email(
                 Source=self.sender,
                 Destination={'ToAddresses': [to_email]},
                 Message={
@@ -176,31 +204,30 @@ class EmailNurtureSequencer:
             )
             return {'success': True, 'message_id': response['MessageId']}
         except Exception as e:
-            print(f"SES send error to {to_email}: {str(e)}")
+            print(f"SES send error to {to_email}: {e}")
             return {'success': False, 'error': str(e)}
 
     def trigger_welcome_sequence(self, lead: Dict, plan_name: str = 'Pro') -> Dict:
-        """Send day-0 welcome email immediately when trial starts"""
+        """Send day-0 welcome email immediately when trial/outreach starts."""
         sequence = NURTURE_SEQUENCES['trial_day_0']
         context = {
-            'name': lead.get('name', 'there'),
-            'plan_name': plan_name
+            'name':      lead.get('name', 'there'),
+            'plan_name': plan_name,
         }
         rendered = self._render_template(sequence['template'], context)
         result = self.send_email(
             to_email=lead['email'],
             subject=sequence['subject'],
             html_body=rendered['html'],
-            text_body=rendered['text']
+            text_body=rendered['text'],
         )
         result['sequence_step'] = 'trial_day_0'
         return result
 
     def trigger_conversion_sequence(self, lead: Dict, step: str) -> Dict:
-        """Send a specific step in the nurture sequence"""
+        """Send a specific step in the nurture sequence."""
         if step not in NURTURE_SEQUENCES:
             return {'success': False, 'error': f'Unknown sequence step: {step}'}
-
         sequence = NURTURE_SEQUENCES[step]
         context = {'name': lead.get('name', 'there')}
         rendered = self._render_template(sequence['template'], context)
@@ -208,41 +235,35 @@ class EmailNurtureSequencer:
             to_email=lead['email'],
             subject=sequence['subject'],
             html_body=rendered['html'],
-            text_body=rendered['text']
+            text_body=rendered['text'],
         )
         result['sequence_step'] = step
         return result
 
     def get_pending_sequence_steps(self, trial_start_date: datetime) -> List[str]:
-        """Return which nurture steps are due based on trial start date"""
-        now = datetime.utcnow()
-        days_elapsed = (now - trial_start_date).days
-        pending = []
-        for step, config in NURTURE_SEQUENCES.items():
-            if config['delay_days'] == days_elapsed:
-                pending.append(step)
-        return pending
+        """Return which nurture steps are due based on trial start date."""
+        days_elapsed = (datetime.utcnow() - trial_start_date).days
+        return [
+            step for step, cfg in NURTURE_SEQUENCES.items()
+            if cfg['delay_days'] == days_elapsed
+        ]
 
     def send_bulk_nurture(self, leads_with_trial_info: List[Dict]) -> List[Dict]:
-        """Process a batch of leads and send any due nurture emails"""
+        """Process a batch of leads and send any due nurture emails."""
         results = []
         for entry in leads_with_trial_info:
-            lead = entry.get('lead', {})
+            lead        = entry.get('lead', {})
             trial_start = entry.get('trial_start')
             if not trial_start or not lead.get('email'):
                 continue
-
             if isinstance(trial_start, str):
-                trial_start = datetime.fromisoformat(trial_start)
-
-            due_steps = self.get_pending_sequence_steps(trial_start)
-            for step in due_steps:
+                trial_start = datetime.fromisoformat(trial_start.replace('Z', '+00:00'))
+            for step in self.get_pending_sequence_steps(trial_start):
                 result = self.trigger_conversion_sequence(lead, step)
                 result['lead_email'] = lead['email']
                 results.append(result)
-
         return results
 
     def send_winback_email(self, lead: Dict) -> Dict:
-        """Send win-back email to churned trial users"""
+        """Send win-back email to churned trial users."""
         return self.trigger_conversion_sequence(lead, 'post_trial_winback')
