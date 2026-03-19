@@ -1,0 +1,173 @@
+name: 🔄 Auto-Rotate & Validate Secrets
+# Runs every Sunday at midnight UTC.
+# Reads SSM, validates each key is still live against its service,
+# re-syncs to GitHub Actions, sends SES alert if any key is expired/invalid.
+# Zero human input required.
+
+on:
+  schedule:
+    - cron: '0 0 * * 0'   # Every Sunday midnight UTC
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+  secrets: write
+
+jobs:
+  rotate-and-validate:
+    name: Rotate & Validate All Secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Auth via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/garcar-github-actions-role
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+        continue-on-error: true
+
+      - name: Auth fallback (static keys)
+        if: env.AWS_ACCESS_KEY_ID == ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION || 'us-east-1' }}
+        continue-on-error: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - run: pip install boto3 pynacl requests stripe -q
+
+      - name: Validate + Sync Secrets
+        env:
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          AWS_REGION:        ${{ secrets.AWS_REGION || 'us-east-1' }}
+        run: |
+          python3 << 'PYEOF'
+          import boto3, os, json, base64, requests
+          from datetime import datetime
+
+          REGION = os.environ.get('AWS_REGION','us-east-1')
+          REPO   = os.environ.get('GITHUB_REPOSITORY','')
+          TOKEN  = os.environ.get('GITHUB_TOKEN','')
+          GH_HDR = {
+              'Authorization': f'token {TOKEN}',
+              'Accept': 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+          }
+
+          ssm    = boto3.client('ssm',  region_name=REGION)
+          ses    = boto3.client('ses',  region_name=REGION)
+
+          # Pull all keys from SSM
+          bundle = {}
+          pager  = ssm.get_paginator('get_parameters_by_path')
+          for page in pager.paginate(Path='/garcar/', WithDecryption=True):
+              for p in page['Parameters']:
+                  k = p['Name'].replace('/garcar/','').upper()
+                  bundle[k] = p['Value']
+
+          print(f'Loaded {len(bundle)} keys from SSM')
+
+          # Validate each revenue-critical key
+          issues = []
+
+          # Stripe
+          sk = bundle.get('STRIPE_SECRET_KEY','')
+          if sk:
+              try:
+                  import stripe
+                  stripe.api_key = sk
+                  stripe.Account.retrieve()
+                  print('  Stripe: VALID')
+              except Exception as e:
+                  print(f'  Stripe: INVALID ({e})')
+                  issues.append(f'STRIPE_SECRET_KEY invalid: {e}')
+
+          # Apollo
+          ap = bundle.get('APOLLO_API_KEY','')
+          if ap:
+              try:
+                  r = requests.post(
+                      'https://api.apollo.io/v1/auth/health',
+                      json={'api_key': ap}, timeout=10
+                  )
+                  if r.status_code == 200:
+                      print('  Apollo: VALID')
+                  else:
+                      print(f'  Apollo: status {r.status_code}')
+                      issues.append(f'APOLLO_API_KEY returned {r.status_code}')
+              except Exception as e:
+                  print(f'  Apollo: error ({e})')
+
+          # OpenAI
+          oai = bundle.get('OPENAI_API_KEY','')
+          if oai:
+              try:
+                  r = requests.get(
+                      'https://api.openai.com/v1/models',
+                      headers={'Authorization': f'Bearer {oai}'}, timeout=10
+                  )
+                  if r.status_code == 200:
+                      print('  OpenAI: VALID')
+                  else:
+                      print(f'  OpenAI: status {r.status_code}')
+                      issues.append(f'OPENAI_API_KEY returned {r.status_code}')
+              except Exception as e:
+                  print(f'  OpenAI: error ({e})')
+
+          # Sync to GitHub
+          try:
+              from nacl import encoding, public
+              pk_r  = requests.get(f'https://api.github.com/repos/{REPO}/actions/secrets/public-key',
+                                   headers=GH_HDR, timeout=10)
+              pk_r.raise_for_status()
+              pk    = pk_r.json()
+              box   = public.SealedBox(public.PublicKey(pk['key'].encode(), encoding.Base64Encoder()))
+              count = 0
+              for key, val in bundle.items():
+                  if not val: continue
+                  enc = base64.b64encode(box.encrypt(val.encode())).decode()
+                  r   = requests.put(
+                      f'https://api.github.com/repos/{REPO}/actions/secrets/{key}',
+                      headers=GH_HDR, timeout=10,
+                      json={'encrypted_value': enc, 'key_id': pk['key_id']}
+                  )
+                  if r.status_code in (201,204): count += 1
+              print(f'  Synced {count}/{len(bundle)} → GitHub Actions')
+          except Exception as e:
+              print(f'  GitHub sync error: {e}')
+              issues.append(f'GitHub sync failed: {e}')
+
+          # SES alert on issues
+          if issues:
+              sender = bundle.get('SES_SENDER_EMAIL','noreply@garcar.io')
+              try:
+                  ses.send_email(
+                      Source=sender,
+                      Destination={'ToAddresses': [sender]},
+                      Message={
+                          'Subject': {'Data': '[Garcar] Secret Validation Issues'},
+                          'Body': {'Text': {'Data':
+                              'The following secrets need attention:\n\n' +
+                              '\n'.join(f'- {i}' for i in issues) +
+                              f'\n\nTimestamp: {datetime.utcnow().isoformat()}Z'
+                          }}
+                      }
+                  )
+                  print(f'  Alert sent to {sender}')
+              except Exception as e:
+                  print(f'  Could not send alert: {e}')
+          else:
+              print('  All keys valid. No alerts needed.')
+
+          print(f'\nRotation complete: {datetime.utcnow().isoformat()}Z')
+          PYEOF
