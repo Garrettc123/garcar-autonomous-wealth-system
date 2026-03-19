@@ -1,15 +1,13 @@
 name: 🚀 Customer Acquisition Loop
 
 on:
-  # Daily at 7:00 AM CST (13:00 UTC) — prime outreach window
   schedule:
-    - cron: '0 13 * * 1-5'  # Weekdays only, Mon-Fri
+    - cron: '0 13 * * 1-5'
 
-  # Manual trigger with niche override
   workflow_dispatch:
     inputs:
       niche_query:
-        description: 'Target niche query (e.g. "general contractor DFW" or leave blank for default)'
+        description: 'Target niche query (leave blank for default DFW contractor)'
         required: false
         default: ''
       leads_per_cycle:
@@ -37,24 +35,25 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install boto3 requests; fi
 
       - name: Run Acquisition Loop
         env:
-          APOLLO_API_KEY:              ${{ secrets.APOLLO_API_KEY }}
-          AWS_ACCESS_KEY_ID:           ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY:       ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REGION:                  ${{ secrets.AWS_REGION }}
-          SES_SENDER_EMAIL:            ${{ secrets.SES_SENDER_EMAIL }}
-          DASHBOARD_URL:               ${{ secrets.DASHBOARD_URL }}
-          UPGRADE_URL:                 ${{ secrets.UPGRADE_URL }}
-          LEADS_PER_CYCLE:             ${{ github.event.inputs.leads_per_cycle || '50' }}
-          MIN_LEAD_SCORE:              '60'
-          REVENUE_PER_CLOSE:           '499'
-          ESTIMATED_CONVERSION_RATE:   '0.05'
-          ACQ_LEDGER_PATH:             acquisition_ledger.json
-          ALW_LEDGER_PATH:             alw_ledger.json
-          DRY_RUN:                     ${{ github.event.inputs.dry_run || 'false' }}
+          APOLLO_API_KEY:             ${{ secrets.APOLLO_API_KEY }}
+          AWS_ACCESS_KEY_ID:          ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY:      ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION:                 ${{ secrets.AWS_REGION }}
+          SES_SENDER_EMAIL:           ${{ secrets.SES_SENDER_EMAIL }}
+          DASHBOARD_URL:              ${{ secrets.DASHBOARD_URL }}
+          UPGRADE_URL:                ${{ secrets.UPGRADE_URL }}
+          LEADS_PER_CYCLE:            ${{ github.event.inputs.leads_per_cycle || '50' }}
+          MIN_LEAD_SCORE:             '60'
+          REVENUE_PER_CLOSE:          '499'
+          ESTIMATED_CONVERSION_RATE:  '0.05'
+          ACQ_LEDGER_PATH:            acquisition_ledger.json
+          ALW_LEDGER_PATH:            alw_ledger.json
+          DRY_RUN:                    ${{ github.event.inputs.dry_run || 'false' }}
         run: |
           NICHE="${{ github.event.inputs.niche_query }}"
           if [ -z "$NICHE" ]; then
@@ -66,24 +65,22 @@ jobs:
       - name: Commit updated ledgers
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "🤖 ACQ loop complete — $(date -u '+%Y-%m-%d %H:%M UTC')"
+          commit_message: "\U0001f916 ACQ loop complete -- $(date -u '+%Y-%m-%d %H:%M UTC')"
           file_pattern: acquisition_ledger.json alw_ledger.json
           commit_user_name: garcar-acq-bot
           commit_user_email: actions@garcar.io
 
       - name: Print Cycle Summary
         run: |
-          echo ""
-          echo "✅ Acquisition Loop Complete"
-          echo "Ledger snapshot:"
-          python3 -c "
-import json
-try:
-    with open('acquisition_ledger.json') as f:
-        data = json.load(f)
-    print(f'  Total contacts in ledger: {len(data)}')
-    recent = [r for r in data if r.get('stage') == 'outreach_sent']
-    print(f'  Outreach sent this session: {len([r for r in data[-50:] if r.get(\"email_status\") == \"sent\"])}' )
-except Exception as e:
-    print(f'  Could not read ledger: {e}')
-"
+          python3 << 'PYEOF'
+          import json
+          try:
+              with open('acquisition_ledger.json') as f:
+                  data = json.load(f)
+              print(f'Total contacts in ledger : {len(data)}')
+              sent = [r for r in data if r.get('email_status') == 'sent']
+              recent_sent = [r for r in data[-50:] if r.get('email_status') == 'sent']
+              print(f'Outreach sent (last 50)  : {len(recent_sent)}')
+          except Exception as e:
+              print(f'Could not read ledger: {e}')
+          PYEOF

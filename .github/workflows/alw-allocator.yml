@@ -1,14 +1,12 @@
 name: 💰 Abundance Living Wallet Allocator
 
 on:
-  # Fires on every push to main (revenue events update the system)
   push:
     branches: [main]
     paths:
       - 'alw_ledger.json'
       - 'abundance_wallet.py'
 
-  # Manual trigger — run anytime from GitHub Actions UI
   workflow_dispatch:
     inputs:
       gross_revenue:
@@ -20,9 +18,8 @@ on:
         required: false
         default: 'manual'
 
-  # Scheduled — runs daily at 6AM CST to log yesterday's allocation
   schedule:
-    - cron: '0 12 * * *'  # 12:00 UTC = 6:00 AM CST
+    - cron: '0 12 * * *'
 
 jobs:
   allocate-abundance-wallet:
@@ -39,7 +36,8 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install boto3 requests; fi
 
       - name: Run Abundance Living Wallet Allocator
         env:
@@ -48,27 +46,35 @@ jobs:
           REVENUE="${{ github.event.inputs.gross_revenue || '10890.00' }}"
           SOURCE="${{ github.event.inputs.source || 'scheduled' }}"
           echo "Running ALW for revenue: $REVENUE from source: $SOURCE"
-          python abundance_wallet.py $REVENUE $SOURCE
+          python abundance_wallet.py "$REVENUE" "$SOURCE"
 
       - name: Commit updated ledger
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "🤖 ALW auto-ledger update — $(date -u '+%Y-%m-%d %H:%M UTC')"
+          commit_message: "\U0001f916 ALW auto-ledger update -- $(date -u '+%Y-%m-%d %H:%M UTC')"
           file_pattern: alw_ledger.json
           commit_user_name: garcar-alw-bot
           commit_user_email: actions@garcar.io
 
       - name: Print ALW Summary
         run: |
-          echo "✅ Abundance Living Wallet allocation complete."
-          echo "   Ledger saved to alw_ledger.json"
-          cat alw_ledger.json | python3 -c "
-import json,sys
-ledger = json.load(sys.stdin)
-last = ledger[-1]
-print(f\"\n  Last Entry: {last['timestamp']}\")
-print(f\"  Gross: ${last['gross_revenue']:,.2f}\")
-print(f\"  ALW Total: ${last['alw_total']:,.2f}\")
-for k,v in last['buckets'].items():
-    print(f\"  {k}: ${v:,.2f}\")
-"
+          python3 << 'PYEOF'
+          import json, os
+          path = os.environ.get('ALW_LEDGER_PATH', 'alw_ledger.json')
+          try:
+              with open(path) as f:
+                  ledger = json.load(f)
+              if not ledger:
+                  print('Ledger is empty — no entries yet.')
+              else:
+                  last = ledger[-1]
+                  print(f"\n  Last Entry : {last.get('timestamp','n/a')}")
+                  print(f"  Gross      : ${last.get('gross_revenue',0):,.2f}")
+                  print(f"  ALW Total  : ${last.get('alw_total',0):,.2f}")
+                  for k, v in last.get('buckets', {}).items():
+                      print(f"  {k}: ${v:,.2f}")
+          except Exception as e:
+              print(f'Could not read ledger: {e}')
+          PYEOF
+        env:
+          ALW_LEDGER_PATH: alw_ledger.json
