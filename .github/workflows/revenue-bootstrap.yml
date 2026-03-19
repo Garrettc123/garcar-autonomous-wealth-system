@@ -1,0 +1,229 @@
+name: 🚀 Revenue Bootstrap — Full Auto-Start
+# One-shot workflow that:
+#   1. Provisions all secrets it can without human input
+#   2. Verifies SES sender identity via AWS
+#   3. Validates all required secrets are present
+#   4. If all green — immediately fires the customer acquisition loop
+#   5. Prints a clear action list for anything still needing a human
+# Run this once. After it completes, daily revenue loop runs on its own schedule.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'secrets_provisioner.py'
+      - '.github/workflows/revenue-bootstrap.yml'
+
+permissions:
+  id-token: write
+  contents: write
+
+jobs:
+  bootstrap:
+    name: Full Revenue Bootstrap
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      ready: ${{ steps.health.outputs.ready }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install all dependencies
+        run: pip install boto3 requests pynacl stripe openai twilio scikit-learn numpy python-dotenv
+
+      # Try OIDC first, fall back to static creds
+      - name: Authenticate to AWS (OIDC)
+        id: oidc
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.OIDC_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          role-session-name: garcar-bootstrap
+        continue-on-error: true
+
+      - name: Authenticate to AWS (static fallback)
+        if: steps.oidc.outcome == 'failure'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION || 'us-east-1' }}
+        continue-on-error: true
+
+      - name: Run Zero-Touch Provisioner
+        env:
+          GITHUB_TOKEN:       ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY:  ${{ github.repository }}
+          AWS_REGION:         ${{ secrets.AWS_REGION || 'us-east-1' }}
+          AWS_ACCOUNT_ID:     ${{ vars.AWS_ACCOUNT_ID || secrets.AWS_ACCOUNT_ID }}
+          STRIPE_SECRET_KEY:  ${{ secrets.STRIPE_SECRET_KEY }}
+          APOLLO_API_KEY:     ${{ secrets.APOLLO_API_KEY }}
+          OPENAI_API_KEY:     ${{ secrets.OPENAI_API_KEY }}
+          LINEAR_API_KEY:     ${{ secrets.LINEAR_API_KEY }}
+          LINEAR_TEAM_ID:     ${{ secrets.LINEAR_TEAM_ID }}
+          SES_SENDER_EMAIL:   ${{ secrets.SES_SENDER_EMAIL }}
+        run: python secrets_provisioner.py
+
+      - name: Verify SES sender identity
+        id: ses_verify
+        env:
+          AWS_REGION:       ${{ secrets.AWS_REGION || 'us-east-1' }}
+          SES_SENDER_EMAIL: ${{ secrets.SES_SENDER_EMAIL }}
+        run: |
+          python3 << 'PYEOF'
+          import boto3, os, sys
+
+          region = os.environ.get('AWS_REGION', 'us-east-1')
+          sender = os.environ.get('SES_SENDER_EMAIL', 'noreply@garcar.io')
+          ses    = boto3.client('ses', region_name=region)
+
+          try:
+              resp    = ses.get_identity_verification_attributes(Identities=[sender])
+              attrs   = resp['VerificationAttributes'].get(sender, {})
+              status  = attrs.get('VerificationStatus', 'NotStarted')
+              print(f'SES verification status for {sender}: {status}')
+
+              if status == 'Success':
+                  print('SES_VERIFIED=true')
+                  with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                      f.write('ses_verified=true\n')
+              else:
+                  # Trigger verification email
+                  ses.verify_email_identity(EmailAddress=sender)
+                  print(f'Verification email sent to {sender}. Status: {status}')
+                  print('ACTION REQUIRED: Check inbox for {sender} and click the verification link.')
+                  with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                      f.write('ses_verified=false\n')
+          except Exception as e:
+              print(f'SES check error: {e}')
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                  f.write('ses_verified=false\n')
+          PYEOF
+
+      - name: Secret health check
+        id: health
+        env:
+          STRIPE_SECRET_KEY:  ${{ secrets.STRIPE_SECRET_KEY }}
+          APOLLO_API_KEY:     ${{ secrets.APOLLO_API_KEY }}
+          OPENAI_API_KEY:     ${{ secrets.OPENAI_API_KEY }}
+          SES_SENDER_EMAIL:   ${{ secrets.SES_SENDER_EMAIL }}
+          AWS_REGION:         ${{ secrets.AWS_REGION || 'us-east-1' }}
+          AWS_ACCESS_KEY_ID:  ${{ secrets.AWS_ACCESS_KEY_ID }}
+          SES_VERIFIED:       ${{ steps.ses_verify.outputs.ses_verified }}
+        run: |
+          python3 << 'PYEOF'
+          import os
+
+          REQUIRED = {
+              'STRIPE_SECRET_KEY':  'https://dashboard.stripe.com/apikeys',
+              'APOLLO_API_KEY':     'https://app.apollo.io/#/settings/integrations/api',
+              'OPENAI_API_KEY':     'https://platform.openai.com/api-keys',
+              'SES_SENDER_EMAIL':   'Set in GitHub Secrets as SES_SENDER_EMAIL',
+              'AWS_REGION':         'Set in GitHub Secrets as AWS_REGION (e.g. us-east-1)',
+              'AWS_ACCESS_KEY_ID':  'https://console.aws.amazon.com/iam',
+          }
+
+          missing = []
+          present = []
+          for key, url in REQUIRED.items():
+              if os.environ.get(key):
+                  present.append(key)
+              else:
+                  missing.append((key, url))
+
+          ses_verified = os.environ.get('SES_VERIFIED', 'false') == 'true'
+
+          print('\n' + '='*60)
+          print('  GARCAR REVENUE READINESS CHECK')
+          print('='*60)
+          for k in present:
+              print(f'  OK  {k}')
+          for k, u in missing:
+              print(f'  MISSING  {k}  ->  {u}')
+          print(f'  SES Verified: {"YES" if ses_verified else "PENDING — check inbox"}')
+          print('='*60)
+
+          # Write output for downstream step
+          ready = len(missing) == 0 and ses_verified
+          github_output = os.environ.get('GITHUB_OUTPUT', '')
+          if github_output:
+              with open(github_output, 'a') as f:
+                  f.write(f'ready={str(ready).lower()}\n')
+                  f.write(f'missing_count={len(missing)}\n')
+
+          if missing:
+              print(f'\n  {len(missing)} secret(s) still needed above.')
+              print('  Add them at: https://github.com/${{ github.repository }}/settings/secrets/actions')
+          elif not ses_verified:
+              print('\n  All secrets present. Waiting on SES email verification.')
+              print(f'  Check inbox for noreply@garcar.io and click the verification link.')
+          else:
+              print('\n  ALL SYSTEMS GO. Firing acquisition loop now...')
+          PYEOF
+
+      - name: Commit provisioning log
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "bootstrap complete -- $(date -u '+%Y-%m-%d %H:%M UTC')"
+          file_pattern: provisioning_log.json
+          commit_user_name: garcar-bootstrap-bot
+          commit_user_email: bootstrap@garcar.io
+
+  # Only fires if ALL secrets present + SES verified
+  fire-acquisition-loop:
+    name: Fire First Acquisition Cycle
+    needs: bootstrap
+    if: needs.bootstrap.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+      - name: Run Customer Acquisition Loop
+        env:
+          APOLLO_API_KEY:             ${{ secrets.APOLLO_API_KEY }}
+          AWS_REGION:                 ${{ secrets.AWS_REGION || 'us-east-1' }}
+          SES_SENDER_EMAIL:           ${{ secrets.SES_SENDER_EMAIL }}
+          DASHBOARD_URL:              ${{ secrets.DASHBOARD_URL || 'https://app.garcar.io/dashboard' }}
+          UPGRADE_URL:                ${{ secrets.UPGRADE_URL   || 'https://app.garcar.io/upgrade' }}
+          LEADS_PER_CYCLE:            '50'
+          MIN_LEAD_SCORE:             '60'
+          REVENUE_PER_CLOSE:          '499'
+          ESTIMATED_CONVERSION_RATE:  '0.05'
+          ACQ_LEDGER_PATH:            acquisition_ledger.json
+          ALW_LEDGER_PATH:            alw_ledger.json
+          DRY_RUN:                    'false'
+        run: python customer_acquisition_loop.py
+
+      - name: Commit updated ledgers
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "first acquisition cycle complete -- $(date -u '+%Y-%m-%d %H:%M UTC')"
+          file_pattern: acquisition_ledger.json alw_ledger.json
+          commit_user_name: garcar-acq-bot
+          commit_user_email: actions@garcar.io

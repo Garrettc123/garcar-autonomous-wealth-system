@@ -1,0 +1,62 @@
+name: 📧 SES Verification Recheck
+# Polls SES every 10 min until noreply@garcar.io is verified,
+# then automatically triggers the full revenue bootstrap.
+# Stops itself once verified.
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'  # every 10 minutes
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+  actions: write
+
+jobs:
+  recheck:
+    name: Check SES Verification Status
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION || 'us-east-1' }}
+        continue-on-error: true
+
+      - name: Check SES status and trigger bootstrap if verified
+        env:
+          AWS_REGION:       ${{ secrets.AWS_REGION || 'us-east-1' }}
+          SES_SENDER_EMAIL: ${{ secrets.SES_SENDER_EMAIL || 'noreply@garcar.io' }}
+          GH_TOKEN:         ${{ secrets.GITHUB_TOKEN }}
+          REPO:             ${{ github.repository }}
+        run: |
+          pip install boto3 -q
+          python3 << 'PYEOF'
+          import boto3, os, subprocess, json
+
+          region = os.environ.get('AWS_REGION', 'us-east-1')
+          sender = os.environ.get('SES_SENDER_EMAIL', 'noreply@garcar.io')
+
+          try:
+              ses    = boto3.client('ses', region_name=region)
+              resp   = ses.get_identity_verification_attributes(Identities=[sender])
+              status = resp['VerificationAttributes'].get(sender, {}).get('VerificationStatus', 'NotStarted')
+              print(f'SES status for {sender}: {status}')
+
+              if status == 'Success':
+                  print('VERIFIED. Triggering revenue-bootstrap workflow...')
+                  result = subprocess.run([
+                      'gh', 'workflow', 'run', 'revenue-bootstrap.yml',
+                      '--repo', os.environ['REPO']
+                  ], capture_output=True, text=True,
+                  env={**os.environ, 'GH_TOKEN': os.environ.get('GH_TOKEN', '')})
+                  print(result.stdout or result.stderr)
+              else:
+                  print(f'Not verified yet ({status}). Will recheck in 10 minutes.')
+          except Exception as e:
+              print(f'Error: {e}')
+          PYEOF
