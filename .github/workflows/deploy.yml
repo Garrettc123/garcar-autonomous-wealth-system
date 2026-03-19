@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
 
 env:
-  AWS_REGION: us-west-2
+  AWS_REGION:     ${{ secrets.AWS_REGION || 'us-east-1' }}   # fixed: was hardcoded us-west-2
   PYTHON_VERSION: '3.11'
-  NODE_VERSION: '18'
+  NODE_VERSION:   '18'
 
 jobs:
   deploy:
@@ -24,7 +24,7 @@ jobs:
         with:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region:            ${{ env.AWS_REGION }}
+          aws-region:            ${{ secrets.AWS_REGION || 'us-east-1' }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -36,11 +36,13 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Package Python Lambda (Orchestrator)
+      - name: Package Python Lambda (Orchestrator + Webhook)
         run: |
           mkdir -p build/python
-          pip install -t build/python boto3 langchain openai stripe requests
-          for f in agent_coordinator.py linear_integration.py lead_acquisition.py; do
+          pip install -t build/python boto3 langchain openai stripe requests scikit-learn numpy pynacl
+          for f in agent_coordinator.py linear_integration.py lead_acquisition.py \
+                   lead_scoring.py aws_utils.py abundance_wallet.py \
+                   stripe_webhook.py email_nurture.py customer_acquisition_loop.py; do
             [ -f "$f" ] && cp "$f" build/python/ || echo "Warning: $f not found, skipping"
           done
           cd build/python && zip -r ../orchestrator.zip . && cd ../..
@@ -49,7 +51,7 @@ jobs:
         run: |
           mkdir -p build/nodejs
           [ -f revenue_agent.js ] && cp revenue_agent.js build/nodejs/index.js || echo "Warning: revenue_agent.js not found"
-          [ -f package.json ]    && cp package.json    build/nodejs/          || echo "Warning: package.json not found"
+          [ -f package.json ]     && cp package.json     build/nodejs/          || echo "Warning: package.json not found"
           cd build/nodejs && npm install --production 2>/dev/null || true
           zip -r ../revenue_agent.zip . && cd ../..
 
@@ -58,7 +60,7 @@ jobs:
           aws lambda update-function-code \
             --function-name garcar-orchestrator \
             --zip-file fileb://build/orchestrator.zip \
-            --region ${{ env.AWS_REGION }} \
+            --region ${{ secrets.AWS_REGION || 'us-east-1' }} \
           || aws lambda create-function \
             --function-name garcar-orchestrator \
             --runtime python3.11 \
@@ -67,14 +69,30 @@ jobs:
             --zip-file fileb://build/orchestrator.zip \
             --timeout 300 \
             --memory-size 512 \
-            --region ${{ env.AWS_REGION }}
+            --region ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+      - name: Deploy Stripe Webhook Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name garcar-stripe-webhook \
+            --zip-file fileb://build/orchestrator.zip \
+            --region ${{ secrets.AWS_REGION || 'us-east-1' }} \
+          || aws lambda create-function \
+            --function-name garcar-stripe-webhook \
+            --runtime python3.11 \
+            --role ${{ secrets.LAMBDA_EXECUTION_ROLE_ARN }} \
+            --handler stripe_webhook.lambda_handler \
+            --zip-file fileb://build/orchestrator.zip \
+            --timeout 30 \
+            --memory-size 256 \
+            --region ${{ secrets.AWS_REGION || 'us-east-1' }}
 
       - name: Deploy Revenue Agent Lambda
         run: |
           aws lambda update-function-code \
             --function-name garcar-revenue-agent \
             --zip-file fileb://build/revenue_agent.zip \
-            --region ${{ env.AWS_REGION }} \
+            --region ${{ secrets.AWS_REGION || 'us-east-1' }} \
           || aws lambda create-function \
             --function-name garcar-revenue-agent \
             --runtime nodejs18.x \
@@ -83,65 +101,75 @@ jobs:
             --zip-file fileb://build/revenue_agent.zip \
             --timeout 300 \
             --memory-size 512 \
-            --region ${{ env.AWS_REGION }}
+            --region ${{ secrets.AWS_REGION || 'us-east-1' }}
 
       - name: Update Lambda Environment Variables
+        env:
+          AWS_REGION:            ${{ secrets.AWS_REGION || 'us-east-1' }}
+          S3_BUCKET:             ${{ secrets.S3_BUCKET }}
+          STRIPE_SECRET_KEY:     ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_PRICE_PRO:      ${{ secrets.STRIPE_PRICE_PRO }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          LINEAR_API_KEY:        ${{ secrets.LINEAR_API_KEY }}
+          LINEAR_TEAM_ID:        ${{ secrets.LINEAR_TEAM_ID }}
+          APOLLO_API_KEY:        ${{ secrets.APOLLO_API_KEY }}
+          OPENAI_API_KEY:        ${{ secrets.OPENAI_API_KEY }}
+          SES_SENDER_EMAIL:      ${{ secrets.SES_SENDER_EMAIL }}
+          DASHBOARD_URL:         ${{ secrets.DASHBOARD_URL || 'https://app.garcar.io/dashboard' }}
+          UPGRADE_URL:           ${{ secrets.UPGRADE_URL   || 'https://app.garcar.io/upgrade' }}
+          ALW_LEDGER_PATH:       /tmp/alw_ledger.json
+          ACQ_LEDGER_PATH:       /tmp/acquisition_ledger.json
         run: |
           python3 << 'PYEOF'
           import subprocess, json, os
 
-          region = os.environ.get('AWS_REGION', 'us-west-2')
+          region = os.environ.get('AWS_REGION', 'us-east-1')
 
-          orchestrator_vars = {
-              'S3_BUCKET':          os.environ.get('S3_BUCKET', ''),
-              'STRIPE_SECRET_KEY':  os.environ.get('STRIPE_SECRET_KEY', ''),
-              'LINEAR_API_KEY':     os.environ.get('LINEAR_API_KEY', ''),
-              'LINEAR_TEAM_ID':     os.environ.get('LINEAR_TEAM_ID', ''),
-              'APOLLO_API_KEY':     os.environ.get('APOLLO_API_KEY', ''),
-              'OPENAI_API_KEY':     os.environ.get('OPENAI_API_KEY', ''),
-          }
-          revenue_vars = {
-              'S3_BUCKET':              os.environ.get('S3_BUCKET', ''),
-              'STRIPE_SECRET_KEY':      os.environ.get('STRIPE_SECRET_KEY', ''),
-              'STRIPE_PRICE_ID':        os.environ.get('STRIPE_PRICE_PRO', ''),
-              'STRIPE_WEBHOOK_SECRET':  os.environ.get('STRIPE_WEBHOOK_SECRET', ''),
-              'LINEAR_API_KEY':         os.environ.get('LINEAR_API_KEY', ''),
-              'LINEAR_TEAM_ID':         os.environ.get('LINEAR_TEAM_ID', ''),
+          LAMBDAS = {
+              'garcar-orchestrator': [
+                  'S3_BUCKET','STRIPE_SECRET_KEY','LINEAR_API_KEY','LINEAR_TEAM_ID',
+                  'APOLLO_API_KEY','OPENAI_API_KEY','SES_SENDER_EMAIL',
+                  'DASHBOARD_URL','UPGRADE_URL','ALW_LEDGER_PATH','ACQ_LEDGER_PATH',
+              ],
+              'garcar-stripe-webhook': [
+                  'STRIPE_SECRET_KEY','STRIPE_WEBHOOK_SECRET','S3_BUCKET',
+                  'ALW_LEDGER_PATH',
+              ],
+              'garcar-revenue-agent': [
+                  'S3_BUCKET','STRIPE_SECRET_KEY','STRIPE_PRICE_PRO',
+                  'STRIPE_WEBHOOK_SECRET','LINEAR_API_KEY','LINEAR_TEAM_ID',
+              ],
           }
 
-          for fn, env_vars in [('garcar-orchestrator', orchestrator_vars), ('garcar-revenue-agent', revenue_vars)]:
-              env_str = json.dumps({'Variables': {k: v for k, v in env_vars.items() if v}})
-              cmd = ['aws', 'lambda', 'update-function-configuration',
+          for fn, keys in LAMBDAS.items():
+              env_vars = {k: os.environ[k] for k in keys if os.environ.get(k)}
+              if not env_vars:
+                  print(f'No env vars to set for {fn}, skipping')
+                  continue
+              cmd = ['aws','lambda','update-function-configuration',
                      '--function-name', fn,
-                     '--environment', env_str,
+                     '--environment', json.dumps({'Variables': env_vars}),
                      '--region', region]
-              result = subprocess.run(cmd, capture_output=True, text=True)
-              if result.returncode == 0:
-                  print(f'Updated env vars for {fn}')
+              r = subprocess.run(cmd, capture_output=True, text=True)
+              if r.returncode == 0:
+                  print(f'Updated {fn} ({len(env_vars)} vars)')
               else:
-                  print(f'Warning updating {fn}: {result.stderr[:200]}')
+                  print(f'Warning {fn}: {r.stderr[:300]}')
           PYEOF
-        env:
-          AWS_REGION:           ${{ env.AWS_REGION }}
-          S3_BUCKET:            ${{ secrets.S3_BUCKET }}
-          STRIPE_SECRET_KEY:    ${{ secrets.STRIPE_SECRET_KEY }}
-          STRIPE_PRICE_PRO:     ${{ secrets.STRIPE_PRICE_PRO }}
-          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
-          LINEAR_API_KEY:       ${{ secrets.LINEAR_API_KEY }}
-          LINEAR_TEAM_ID:       ${{ secrets.LINEAR_TEAM_ID }}
-          APOLLO_API_KEY:       ${{ secrets.APOLLO_API_KEY }}
-          OPENAI_API_KEY:       ${{ secrets.OPENAI_API_KEY }}
 
-      - name: Test Deployment
+      - name: Test Orchestrator Lambda
         run: |
           aws lambda invoke \
             --function-name garcar-orchestrator \
-            --region ${{ env.AWS_REGION }} \
+            --region ${{ secrets.AWS_REGION || 'us-east-1' }} \
             --payload '{}' \
-            response.json && cat response.json || echo "Lambda invocation failed — function may not exist yet."
+            response.json && cat response.json \
+          || echo "Lambda invocation failed — may not exist yet or needs cold start."
 
       - name: Deployment Summary
         run: |
+          REGION=${{ secrets.AWS_REGION || 'us-east-1' }}
           echo "Deployment complete."
-          echo "Orchestrator : https://console.aws.amazon.com/lambda/home?region=${{ env.AWS_REGION }}#/functions/garcar-orchestrator"
-          echo "Revenue Agent: https://console.aws.amazon.com/lambda/home?region=${{ env.AWS_REGION }}#/functions/garcar-revenue-agent"
+          echo "Orchestrator:    https://console.aws.amazon.com/lambda/home?region=$REGION#/functions/garcar-orchestrator"
+          echo "Stripe Webhook:  https://console.aws.amazon.com/lambda/home?region=$REGION#/functions/garcar-stripe-webhook"
+          echo "Revenue Agent:   https://console.aws.amazon.com/lambda/home?region=$REGION#/functions/garcar-revenue-agent"
