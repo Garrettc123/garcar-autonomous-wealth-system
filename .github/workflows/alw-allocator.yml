@@ -1,0 +1,74 @@
+name: 💰 Abundance Living Wallet Allocator
+
+on:
+  # Fires on every push to main (revenue events update the system)
+  push:
+    branches: [main]
+    paths:
+      - 'alw_ledger.json'
+      - 'abundance_wallet.py'
+
+  # Manual trigger — run anytime from GitHub Actions UI
+  workflow_dispatch:
+    inputs:
+      gross_revenue:
+        description: 'Gross revenue amount in USD (e.g. 10890.00)'
+        required: true
+        default: '10890.00'
+      source:
+        description: 'Revenue source (stripe, paypal, manual, etc.)'
+        required: false
+        default: 'manual'
+
+  # Scheduled — runs daily at 6AM CST to log yesterday's allocation
+  schedule:
+    - cron: '0 12 * * *'  # 12:00 UTC = 6:00 AM CST
+
+jobs:
+  allocate-abundance-wallet:
+    name: Run ALW Allocator
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Abundance Living Wallet Allocator
+        env:
+          ALW_LEDGER_PATH: alw_ledger.json
+        run: |
+          REVENUE="${{ github.event.inputs.gross_revenue || '10890.00' }}"
+          SOURCE="${{ github.event.inputs.source || 'scheduled' }}"
+          echo "Running ALW for revenue: $REVENUE from source: $SOURCE"
+          python abundance_wallet.py $REVENUE $SOURCE
+
+      - name: Commit updated ledger
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "🤖 ALW auto-ledger update — $(date -u '+%Y-%m-%d %H:%M UTC')"
+          file_pattern: alw_ledger.json
+          commit_user_name: garcar-alw-bot
+          commit_user_email: actions@garcar.io
+
+      - name: Print ALW Summary
+        run: |
+          echo "✅ Abundance Living Wallet allocation complete."
+          echo "   Ledger saved to alw_ledger.json"
+          cat alw_ledger.json | python3 -c "
+import json,sys
+ledger = json.load(sys.stdin)
+last = ledger[-1]
+print(f\"\n  Last Entry: {last['timestamp']}\")
+print(f\"  Gross: ${last['gross_revenue']:,.2f}\")
+print(f\"  ALW Total: ${last['alw_total']:,.2f}\")
+for k,v in last['buckets'].items():
+    print(f\"  {k}: ${v:,.2f}\")
+"
