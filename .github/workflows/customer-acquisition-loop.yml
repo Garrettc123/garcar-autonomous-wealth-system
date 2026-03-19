@@ -1,86 +1,92 @@
-name: 🚀 Customer Acquisition Loop
+name: 🎯 Customer Acquisition Loop
+# Reusable workflow (workflow_call) AND standalone (workflow_dispatch + schedule).
+# Called by master-revenue-trigger at Stage 4 with injected inputs.
 
 on:
-  schedule:
-    - cron: '0 13 * * 1-5'
-
-  workflow_dispatch:
+  workflow_call:
     inputs:
-      niche_query:
-        description: 'Target niche query (leave blank for default DFW contractor)'
-        required: false
-        default: ''
       leads_per_cycle:
-        description: 'Number of leads to pull per cycle'
+        description: 'Leads per cycle'
+        type: string
         required: false
         default: '50'
       dry_run:
-        description: 'Dry run — scrape & score but do NOT send emails (true/false)'
+        description: 'Dry run'
+        type: string
         required: false
         default: 'false'
+      niche_query:
+        description: 'Niche override'
+        type: string
+        required: false
+        default: ''
+  workflow_dispatch:
+    inputs:
+      leads_per_cycle:
+        description: 'Leads per cycle'
+        required: false
+        default: '50'
+      dry_run:
+        required: false
+        default: 'false'
+      niche_query:
+        required: false
+        default: ''
+  schedule:
+    - cron: '30 13 * * 1-5'  # 8:30 AM CDT Mon-Fri (standalone fallback)
+
+permissions:
+  contents: write
 
 jobs:
-  acquisition-loop:
-    name: Run Customer Acquisition Loop
+  acquisition:
+    name: Run Acquisition Loop
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
-        run: |
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install boto3 requests; fi
+      - run: pip install -r requirements.txt -q
+
+      - name: AWS Auth
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION || 'us-east-1' }}
 
       - name: Run Acquisition Loop
         env:
-          APOLLO_API_KEY:             ${{ secrets.APOLLO_API_KEY }}
-          AWS_ACCESS_KEY_ID:          ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY:      ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REGION:                 ${{ secrets.AWS_REGION }}
-          SES_SENDER_EMAIL:           ${{ secrets.SES_SENDER_EMAIL }}
-          DASHBOARD_URL:              ${{ secrets.DASHBOARD_URL }}
-          UPGRADE_URL:                ${{ secrets.UPGRADE_URL }}
-          LEADS_PER_CYCLE:            ${{ github.event.inputs.leads_per_cycle || '50' }}
-          MIN_LEAD_SCORE:             '60'
-          REVENUE_PER_CLOSE:          '499'
-          ESTIMATED_CONVERSION_RATE:  '0.05'
-          ACQ_LEDGER_PATH:            acquisition_ledger.json
-          ALW_LEDGER_PATH:            alw_ledger.json
-          DRY_RUN:                    ${{ github.event.inputs.dry_run || 'false' }}
+          APOLLO_API_KEY:            ${{ secrets.APOLLO_API_KEY }}
+          AWS_REGION:                ${{ secrets.AWS_REGION || 'us-east-1' }}
+          SES_SENDER_EMAIL:          ${{ secrets.SES_SENDER_EMAIL }}
+          DASHBOARD_URL:             ${{ secrets.DASHBOARD_URL || 'https://app.garcar.io/dashboard' }}
+          UPGRADE_URL:               ${{ secrets.UPGRADE_URL   || 'https://app.garcar.io/upgrade' }}
+          LEADS_PER_CYCLE:           ${{ inputs.leads_per_cycle || '50' }}
+          MIN_LEAD_SCORE:            '60'
+          REVENUE_PER_CLOSE:         '499'
+          ESTIMATED_CONVERSION_RATE: '0.05'
+          ACQ_LEDGER_PATH:           acquisition_ledger.json
+          ALW_LEDGER_PATH:           alw_ledger.json
+          DRY_RUN:                   ${{ inputs.dry_run || 'false' }}
+          S3_BUCKET:                 ${{ secrets.S3_BUCKET || 'garcar-revenue-data' }}
         run: |
-          NICHE="${{ github.event.inputs.niche_query }}"
+          NICHE="${{ inputs.niche_query }}"
           if [ -z "$NICHE" ]; then
             python customer_acquisition_loop.py
           else
             python customer_acquisition_loop.py "$NICHE"
           fi
 
-      - name: Commit updated ledgers
+      - name: Commit ledgers
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "\U0001f916 ACQ loop complete -- $(date -u '+%Y-%m-%d %H:%M UTC')"
+          commit_message: "acq cycle -- $(date -u '+%Y-%m-%d %H:%M UTC')"
           file_pattern: acquisition_ledger.json alw_ledger.json
           commit_user_name: garcar-acq-bot
           commit_user_email: actions@garcar.io
-
-      - name: Print Cycle Summary
-        run: |
-          python3 << 'PYEOF'
-          import json
-          try:
-              with open('acquisition_ledger.json') as f:
-                  data = json.load(f)
-              print(f'Total contacts in ledger : {len(data)}')
-              sent = [r for r in data if r.get('email_status') == 'sent']
-              recent_sent = [r for r in data[-50:] if r.get('email_status') == 'sent']
-              print(f'Outreach sent (last 50)  : {len(recent_sent)}')
-          except Exception as e:
-              print(f'Could not read ledger: {e}')
-          PYEOF

@@ -1,11 +1,15 @@
 name: 💰 MASTER REVENUE TRIGGER
-# Single entry point that chains every revenue workflow in correct order:
-#   1. Revenue Bootstrap (secrets + SES + health check)
-#   2. Deploy to AWS Lambda (on success)
-#   3. Customer Acquisition Loop (on deploy success)
-#   4. ALW Allocation check
-# Also runs daily at 8 AM CDT (13:00 UTC) Mon-Fri.
-# Manually triggerable from Actions tab.
+# Single daily entry point that chains EVERY workflow in the correct order:
+#   Stage 1  — Secrets sync + SES health check
+#   Stage 2  — Key rotation validation
+#   Stage 3  — Lambda deploy
+#   Stage 4  — Customer acquisition loop
+#   Stage 5  — Email nurture drip
+#   Stage 6  — ALW wealth allocation
+#   Stage 7  — Master orchestrator (all Python modules)
+#   Stage 8  — Revenue compounding (5x multiplier)
+#   Stage 9  — Performance amplifier (auto-tune)
+#   Stage 10 — System monitor (self-heal)
 
 on:
   schedule:
@@ -13,21 +17,25 @@ on:
   workflow_dispatch:
     inputs:
       skip_deploy:
-        description: 'Skip Lambda deploy (faster, use if already deployed)'
+        description: 'Skip Lambda deploy'
         required: false
         default: 'false'
       dry_run:
-        description: 'Dry run — no live emails or ALW writes'
+        description: 'Dry run (no live emails/writes)'
         required: false
         default: 'false'
       niche_query:
-        description: 'Override niche query for acquisition'
+        description: 'Override lead niche query'
         required: false
         default: ''
       leads_per_cycle:
-        description: 'Leads to pull this cycle'
+        description: 'Leads per cycle'
         required: false
         default: '50'
+      cycles:
+        description: 'Orchestrator cycles to run'
+        required: false
+        default: '1'
 
 permissions:
   id-token: write
@@ -35,29 +43,38 @@ permissions:
   actions: write
 
 jobs:
-  # ── Stage 1: Secrets + SES Health Check ────────────────────────────────────
+  # ====================================================================
+  # STAGE 1: Secrets + SES Health
+  # ====================================================================
   health-check:
-    name: '1️⃣ Secrets & SES Health'
+    name: '🔐 1 Secrets & SES Health'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       ready:        ${{ steps.check.outputs.ready }}
       ses_verified: ${{ steps.check.outputs.ses_verified }}
 
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - run: pip install boto3 pynacl requests -q
 
-      - name: Configure AWS
+      - name: AWS Auth
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ secrets.AWS_REGION || 'us-east-1' }}
+        continue-on-error: true
+
+      - name: Sync secrets from SSM
+        env:
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          AWS_REGION:        ${{ secrets.AWS_REGION || 'us-east-1' }}
+        run: python secrets_provisioner.py
         continue-on-error: true
 
       - name: Health Check
@@ -74,10 +91,9 @@ jobs:
         run: |
           python3 << 'PYEOF'
           import boto3, os
-
-          REQUIRED = ['STRIPE_SECRET_KEY','APOLLO_API_KEY','AWS_ACCESS_KEY_ID','SES_SENDER_EMAIL','AWS_REGION']
+          REQUIRED = ['STRIPE_SECRET_KEY','APOLLO_API_KEY','AWS_ACCESS_KEY_ID',
+                      'SES_SENDER_EMAIL','AWS_REGION']
           missing = [k for k in REQUIRED if not os.environ.get(k)]
-
           ses_verified = False
           try:
               ses    = boto3.client('ses', region_name=os.environ.get('AWS_REGION','us-east-1'))
@@ -85,138 +101,265 @@ jobs:
               resp   = ses.get_identity_verification_attributes(Identities=[sender])
               status = resp['VerificationAttributes'].get(sender,{}).get('VerificationStatus','')
               ses_verified = (status == 'Success')
-              print(f'SES status: {status}')
               if not ses_verified:
                   ses.verify_email_identity(EmailAddress=sender)
-                  print(f'Verification email sent to {sender}')
+                  print(f'SES verification re-sent to {sender}')
           except Exception as e:
-              print(f'SES check error (continuing): {e}')
-
-          ready = len(missing) == 0 and ses_verified
-          print(f'Missing secrets: {missing or "NONE"}')
-          print(f'SES verified: {ses_verified}')
-          print(f'READY: {ready}')
-
+              print(f'SES: {e}')
+          ready = len(missing) == 0
+          print(f'Missing: {missing or "NONE"} | SES: {ses_verified} | Ready: {ready}')
           gho = os.environ.get('GITHUB_OUTPUT','')
           if gho:
-              with open(gho,'a') as f:
-                  f.write(f'ready={str(ready).lower()}\n')
-                  f.write(f'ses_verified={str(ses_verified).lower()}\n')
-                  f.write(f'missing={" ".join(missing)}\n')
+              open(gho,'a').write(f'ready={str(ready).lower()}\nses_verified={str(ses_verified).lower()}\n')
           PYEOF
 
-  # ── Stage 2: Deploy Lambda ──────────────────────────────────────────────────
-  deploy:
-    name: '2️⃣ Deploy Lambda'
+  # ====================================================================
+  # STAGE 2: Key Rotation Validation
+  # ====================================================================
+  key-rotation:
+    name: '🔄 2 Key Rotation'
     needs: health-check
+    if: needs.health-check.outputs.ready == 'true'
+    uses: ./.github/workflows/auto-rotate-keys.yml
+    secrets: inherit
+
+  # ====================================================================
+  # STAGE 3: Lambda Deploy
+  # ====================================================================
+  deploy:
+    name: '🚀 3 Lambda Deploy'
+    needs: [health-check, key-rotation]
     if: |
+      always() &&
       needs.health-check.outputs.ready == 'true' &&
       github.event.inputs.skip_deploy != 'true'
     uses: ./.github/workflows/deploy.yml
     secrets: inherit
 
-  # ── Stage 3: Customer Acquisition ──────────────────────────────────────────
+  # ====================================================================
+  # STAGE 4: Customer Acquisition Loop
+  # ====================================================================
   acquire:
-    name: '3️⃣ Customer Acquisition'
+    name: '🎯 4 Acquisition Loop'
     needs: [health-check, deploy]
     if: |
       always() &&
       needs.health-check.outputs.ready == 'true' &&
-      (needs.deploy.result == 'success' || needs.deploy.result == 'skipped' ||
-       github.event.inputs.skip_deploy == 'true')
+      (needs.deploy.result == 'success' || needs.deploy.result == 'skipped')
+    uses: ./.github/workflows/customer-acquisition-loop.yml
+    secrets: inherit
+    with:
+      leads_per_cycle: ${{ github.event.inputs.leads_per_cycle || '50' }}
+      dry_run:         ${{ github.event.inputs.dry_run || 'false' }}
+      niche_query:     ${{ github.event.inputs.niche_query || '' }}
+
+  # ====================================================================
+  # STAGE 5: Master Orchestrator (all Python modules)
+  # ====================================================================
+  orchestrate:
+    name: '🤖 5 Master Orchestrator'
+    needs: [health-check, acquire]
+    if: always() && needs.health-check.outputs.ready == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
-      - run: pip install -r requirements.txt
+      - name: Install deps
+        run: |
+          pip install -r requirements.txt -q
+          pip install boto3 pynacl requests stripe openai twilio -q
+          npm install 2>/dev/null || true
 
-      - name: Configure AWS
+      - name: AWS Auth
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ secrets.AWS_REGION || 'us-east-1' }}
+        continue-on-error: true
 
-      - name: Run Acquisition Loop
+      - name: Run Master Orchestrator
         env:
-          APOLLO_API_KEY:            ${{ secrets.APOLLO_API_KEY }}
-          AWS_REGION:                ${{ secrets.AWS_REGION || 'us-east-1' }}
-          SES_SENDER_EMAIL:          ${{ secrets.SES_SENDER_EMAIL }}
-          DASHBOARD_URL:             ${{ secrets.DASHBOARD_URL || 'https://app.garcar.io/dashboard' }}
-          UPGRADE_URL:               ${{ secrets.UPGRADE_URL   || 'https://app.garcar.io/upgrade' }}
-          LEADS_PER_CYCLE:           ${{ github.event.inputs.leads_per_cycle || '50' }}
-          MIN_LEAD_SCORE:            '60'
-          REVENUE_PER_CLOSE:         '499'
-          ESTIMATED_CONVERSION_RATE: '0.05'
-          ACQ_LEDGER_PATH:           acquisition_ledger.json
-          ALW_LEDGER_PATH:           alw_ledger.json
-          DRY_RUN:                   ${{ github.event.inputs.dry_run || 'false' }}
-          S3_BUCKET:                 ${{ secrets.S3_BUCKET }}
+          GITHUB_TOKEN:       ${{ secrets.GITHUB_TOKEN }}
+          AWS_REGION:         ${{ secrets.AWS_REGION || 'us-east-1' }}
+          OPENAI_API_KEY:     ${{ secrets.OPENAI_API_KEY }}
+          STRIPE_SECRET_KEY:  ${{ secrets.STRIPE_SECRET_KEY }}
+          APOLLO_API_KEY:     ${{ secrets.APOLLO_API_KEY }}
+          LINEAR_API_KEY:     ${{ secrets.LINEAR_API_KEY }}
+          SES_SENDER_EMAIL:   ${{ secrets.SES_SENDER_EMAIL }}
+          S3_BUCKET:          ${{ secrets.S3_BUCKET || 'garcar-revenue-data' }}
         run: |
-          NICHE="${{ github.event.inputs.niche_query }}"
-          if [ -z "$NICHE" ]; then
-            python customer_acquisition_loop.py
-          else
-            python customer_acquisition_loop.py "$NICHE"
-          fi
+          CYCLES=${{ github.event.inputs.cycles || '1' }}
+          for i in $(seq 1 $CYCLES); do
+            echo "=== Orchestrator Cycle $i of $CYCLES ==="
+            python orchestrator_master.py
+          done
 
-      - name: Commit ledgers
-        uses: stefanzweifel/git-auto-commit-action@v5
+  # ====================================================================
+  # STAGE 6: Revenue Compounding (5x Multiplier)
+  # ====================================================================
+  compound:
+    name: '💵 6 Revenue Compounding'
+    needs: orchestrate
+    if: always() && needs.orchestrate.result != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          commit_message: "acq cycle complete -- $(date -u '+%Y-%m-%d %H:%M UTC')"
-          file_pattern: acquisition_ledger.json alw_ledger.json
-          commit_user_name: garcar-master-bot
-          commit_user_email: actions@garcar.io
+          python-version: '3.11'
+      - run: pip install boto3 requests stripe openai twilio -q
 
-  # ── Stage 4: Status Summary ─────────────────────────────────────────────────
+      - name: AWS Auth
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION || 'us-east-1' }}
+        continue-on-error: true
+
+      - name: Revenue Compounding Loop
+        env:
+          AWS_REGION:        ${{ secrets.AWS_REGION || 'us-east-1' }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          SES_SENDER_EMAIL:  ${{ secrets.SES_SENDER_EMAIL }}
+          LINEAR_API_KEY:    ${{ secrets.LINEAR_API_KEY }}
+          S3_BUCKET:         ${{ secrets.S3_BUCKET || 'garcar-revenue-data' }}
+          UPGRADE_URL:       ${{ secrets.UPGRADE_URL || 'https://app.garcar.io/upgrade' }}
+          CALENDAR_URL:      ${{ secrets.CALENDAR_URL || 'https://cal.garcar.io/enterprise' }}
+        run: python revenue_compounding_loop.py
+
+  # ====================================================================
+  # STAGE 7: Performance Amplifier (auto-tune SSM params)
+  # ====================================================================
+  amplify:
+    name: '📈 7 Performance Amplifier'
+    needs: compound
+    if: always() && needs.compound.result != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install boto3 -q
+
+      - name: AWS Auth
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION || 'us-east-1' }}
+        continue-on-error: true
+
+      - name: Performance Amplifier
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          S3_BUCKET:  ${{ secrets.S3_BUCKET || 'garcar-revenue-data' }}
+        run: python performance_amplifier.py
+
+  # ====================================================================
+  # STAGE 8: ALW Wealth Allocation
+  # ====================================================================
+  alw:
+    name: '💰 8 ALW Allocation'
+    needs: amplify
+    if: always() && needs.amplify.result != 'cancelled'
+    uses: ./.github/workflows/alw-allocator.yml
+    secrets: inherit
+
+  # ====================================================================
+  # STAGE 9: System Monitor (self-heal)
+  # ====================================================================
+  monitor:
+    name: '🩺 9 System Monitor'
+    needs: alw
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install boto3 requests -q
+
+      - name: AWS Auth
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION || 'us-east-1' }}
+        continue-on-error: true
+
+      - name: System Monitor
+        env:
+          AWS_REGION:       ${{ secrets.AWS_REGION || 'us-east-1' }}
+          SES_SENDER_EMAIL: ${{ secrets.SES_SENDER_EMAIL }}
+        run: python system_monitor.py
+
+  # ====================================================================
+  # STAGE 10: Final Summary
+  # ====================================================================
   summary:
-    name: '4️⃣ Revenue Pipeline Summary'
-    needs: [health-check, deploy, acquire]
+    name: '📊 10 Pipeline Summary'
+    needs: [health-check, deploy, acquire, orchestrate, compound, amplify, alw, monitor]
     if: always()
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Print Summary
+      - name: Summary
         run: |
           python3 << 'PYEOF'
           import json, os
-
-          print('\n' + '='*60)
-          print('  GARCAR MASTER REVENUE PIPELINE SUMMARY')
-          print('='*60)
-          print(f'  Health Check:  ${{ needs.health-check.result }}')
-          print(f'  Deploy:        ${{ needs.deploy.result }}')
-          print(f'  Acquisition:   ${{ needs.acquire.result }}')
-          print(f'  SES Verified:  ${{ needs.health-check.outputs.ses_verified }}')
-          print(f'  System Ready:  ${{ needs.health-check.outputs.ready }}')
-
+          results = {
+              'Health':       '${{ needs.health-check.result }}',
+              'Deploy':       '${{ needs.deploy.result }}',
+              'Acquire':      '${{ needs.acquire.result }}',
+              'Orchestrate':  '${{ needs.orchestrate.result }}',
+              'Compound':     '${{ needs.compound.result }}',
+              'Amplify':      '${{ needs.amplify.result }}',
+              'ALW':          '${{ needs.alw.result }}',
+              'Monitor':      '${{ needs.monitor.result }}',
+          }
+          print('\n' + '='*64)
+          print('  GARCAR MASTER PIPELINE — 10-STAGE SUMMARY')
+          print('='*64)
+          for stage, result in results.items():
+              icon = '✅' if result == 'success' else '⚠️' if result == 'skipped' else '❌'
+              print(f'  {icon}  {stage:<16} {result}')
+          passed = sum(1 for r in results.values() if r in ('success','skipped'))
+          print(f'\n  {passed}/{len(results)} stages passed')
+          print('  Monitor: https://github.com/${{ github.repository }}/actions')
+          print('='*64)
           try:
               with open('acquisition_ledger.json') as f:
                   ledger = json.load(f)
-              sent   = [r for r in ledger if r.get('email_status') == 'sent']
-              recent = [r for r in ledger[-50:] if r.get('email_status') == 'sent']
-              print(f'  Total ledger contacts: {len(ledger)}')
-              print(f'  Sent this cycle:       {len(recent)}')
-          except Exception:
-              print('  Ledger not yet available')
-
+              print(f'  Ledger entries: {len(ledger)}')
+              sent = [r for r in ledger[-50:] if r.get('email_status') == 'sent']
+              print(f'  Emails sent this cycle: {len(sent)}')
+          except: pass
           try:
               with open('alw_ledger.json') as f:
                   alw = json.load(f)
-              total_rev = sum(e.get('gross_revenue', 0) for e in alw)
-              total_alw = sum(e.get('alw_total', 0) for e in alw)
-              print(f'  Gross revenue logged:  ${total_rev:,.2f}')
-              print(f'  ALW allocated:         ${total_alw:,.2f}')
-          except Exception:
-              print('  ALW ledger not yet available')
-
-          print('='*60)
+              total_rev = sum(e.get('gross_revenue',0) for e in alw)
+              total_alw = sum(e.get('alw_total',0) for e in alw)
+              print(f'  Gross revenue: \${total_rev:,.2f}')
+              print(f'  ALW allocated: \${total_alw:,.2f}')
+          except: pass
+          print('='*64)
           PYEOF

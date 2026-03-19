@@ -1,80 +1,50 @@
-name: 💰 Abundance Living Wallet Allocator
+name: 💸 ALW Wealth Allocator
+# Reusable (workflow_call) + standalone (workflow_dispatch + schedule)
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'alw_ledger.json'
-      - 'abundance_wallet.py'
-
-  workflow_dispatch:
-    inputs:
-      gross_revenue:
-        description: 'Gross revenue amount in USD (e.g. 10890.00)'
-        required: true
-        default: '10890.00'
-      source:
-        description: 'Revenue source (stripe, paypal, manual, etc.)'
-        required: false
-        default: 'manual'
-
+  workflow_call: {}
+  workflow_dispatch: {}
   schedule:
-    - cron: '0 12 * * *'
+    - cron: '0 14 * * 5'  # Fridays 9 AM CDT
+
+permissions:
+  contents: write
 
 jobs:
-  allocate-abundance-wallet:
-    name: Run ALW Allocator
+  allocate:
+    name: ALW Allocation
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
-        run: |
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install boto3 requests; fi
+      - run: pip install boto3 requests stripe -q
 
-      - name: Run Abundance Living Wallet Allocator
+      - name: AWS Auth
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION || 'us-east-1' }}
+        continue-on-error: true
+
+      - name: Run ALW Allocator
         env:
-          ALW_LEDGER_PATH: alw_ledger.json
-        run: |
-          REVENUE="${{ github.event.inputs.gross_revenue || '10890.00' }}"
-          SOURCE="${{ github.event.inputs.source || 'scheduled' }}"
-          echo "Running ALW for revenue: $REVENUE from source: $SOURCE"
-          python abundance_wallet.py "$REVENUE" "$SOURCE"
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          AWS_REGION:        ${{ secrets.AWS_REGION || 'us-east-1' }}
+          ALW_LEDGER_PATH:   alw_ledger.json
+          S3_BUCKET:         ${{ secrets.S3_BUCKET || 'garcar-revenue-data' }}
+        run: python abundance_wallet.py
 
-      - name: Commit updated ledger
+      - name: Commit ALW ledger
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "\U0001f916 ALW auto-ledger update -- $(date -u '+%Y-%m-%d %H:%M UTC')"
+          commit_message: "alw allocation -- $(date -u '+%Y-%m-%d %H:%M UTC')"
           file_pattern: alw_ledger.json
           commit_user_name: garcar-alw-bot
           commit_user_email: actions@garcar.io
-
-      - name: Print ALW Summary
-        run: |
-          python3 << 'PYEOF'
-          import json, os
-          path = os.environ.get('ALW_LEDGER_PATH', 'alw_ledger.json')
-          try:
-              with open(path) as f:
-                  ledger = json.load(f)
-              if not ledger:
-                  print('Ledger is empty — no entries yet.')
-              else:
-                  last = ledger[-1]
-                  print(f"\n  Last Entry : {last.get('timestamp','n/a')}")
-                  print(f"  Gross      : ${last.get('gross_revenue',0):,.2f}")
-                  print(f"  ALW Total  : ${last.get('alw_total',0):,.2f}")
-                  for k, v in last.get('buckets', {}).items():
-                      print(f"  {k}: ${v:,.2f}")
-          except Exception as e:
-              print(f'Could not read ledger: {e}')
-          PYEOF
-        env:
-          ALW_LEDGER_PATH: alw_ledger.json
