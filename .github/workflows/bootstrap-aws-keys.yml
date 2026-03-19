@@ -1,0 +1,79 @@
+name: 🔑 One-Time Bootstrap (AWS Keys → OIDC)
+# Run this workflow ONCE after adding your AWS keys as GitHub secrets.
+# It will:
+#   1. Use those static keys to create the OIDC role in IAM
+#   2. Write all SSM defaults
+#   3. From that point forward, static keys are NEVER needed again.
+#      The auto-provision-secrets workflow takes over entirely.
+#
+# WHEN TO RUN: Only once, manually, right after you first add:
+#   AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY to GitHub Secrets.
+# After this succeeds, you can delete those two secrets from GitHub.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+  secrets: write
+
+jobs:
+  bootstrap:
+    name: Bootstrap AWS OIDC + SSM Vault
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS (static keys — one-time only)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - run: pip install boto3 pynacl requests -q
+
+      - name: Run bootstrap provisioner
+        env:
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          AWS_REGION:        ${{ secrets.AWS_REGION || 'us-east-1' }}
+        run: python secrets_provisioner.py
+
+      - name: Instructions — add revenue API keys once
+        run: |
+          cat << 'EOF'
+          ============================================================
+          BOOTSTRAP COMPLETE.
+
+          The OIDC role is now active. Static AWS keys are no longer
+          needed in GitHub. You can delete AWS_ACCESS_KEY_ID and
+          AWS_SECRET_ACCESS_KEY from GitHub Secrets now.
+
+          FINAL ONE-TIME STEP — add your 3 revenue API keys to AWS SSM
+          (run these from your terminal or Termux):
+
+            aws ssm put-parameter --name /garcar/STRIPE_SECRET_KEY \
+              --value "sk_live_..." --type SecureString --overwrite
+
+            aws ssm put-parameter --name /garcar/STRIPE_WEBHOOK_SECRET \
+              --value "whsec_..." --type SecureString --overwrite
+
+            aws ssm put-parameter --name /garcar/APOLLO_API_KEY \
+              --value "your_apollo_key" --type SecureString --overwrite
+
+            aws ssm put-parameter --name /garcar/OPENAI_API_KEY \
+              --value "sk-..." --type SecureString --overwrite
+
+          After that, NEVER touch secrets again.
+          auto-provision-secrets.yml runs daily and keeps everything
+          synced to GitHub Actions automatically.
+          ============================================================
+          EOF
