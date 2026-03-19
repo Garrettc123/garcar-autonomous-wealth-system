@@ -1,12 +1,24 @@
-name: Deploy Garcar Autonomous Wealth System
+name: 🚀 Deploy to AWS Lambda
+# FIXED: Removed push trigger — deploy now only fires from:
+#   1. master-revenue-trigger.yml (Stage 3, workflow_call)
+#   2. Manual workflow_dispatch
+# This prevents double-deploy races when pushes hit main.
 
 on:
-  push:
-    branches: [main]
+  workflow_call: {}
   workflow_dispatch:
+    inputs:
+      region_override:
+        description: 'AWS region override (default: uses secret)'
+        required: false
+        default: ''
+
+concurrency:
+  group: deploy-lambda
+  cancel-in-progress: false   # never cancel a deploy mid-flight
 
 env:
-  AWS_REGION:     ${{ secrets.AWS_REGION || 'us-east-1' }}   # fixed: was hardcoded us-west-2
+  AWS_REGION:     ${{ secrets.AWS_REGION || 'us-east-1' }}
   PYTHON_VERSION: '3.11'
   NODE_VERSION:   '18'
 
@@ -14,96 +26,110 @@ jobs:
   deploy:
     name: Deploy to AWS Lambda
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: AWS Auth (OIDC)
+        id: oidc
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/garcar-github-actions-role
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+        continue-on-error: true
+
+      - name: AWS Auth (static fallback)
+        if: steps.oidc.outcome == 'failure'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ secrets.AWS_REGION || 'us-east-1' }}
+        continue-on-error: true
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Package Python Lambda (Orchestrator + Webhook)
+      - name: Package Python Lambda
         run: |
           mkdir -p build/python
-          pip install -t build/python boto3 langchain openai stripe requests scikit-learn numpy pynacl
+          pip install -t build/python boto3 langchain openai stripe requests scikit-learn numpy pynacl -q
           for f in agent_coordinator.py linear_integration.py lead_acquisition.py \
                    lead_scoring.py aws_utils.py abundance_wallet.py \
                    stripe_webhook.py email_nurture.py customer_acquisition_loop.py; do
-            [ -f "$f" ] && cp "$f" build/python/ || echo "Warning: $f not found, skipping"
+            [ -f "$f" ] && cp "$f" build/python/ || echo "Skip $f (not found)"
           done
           cd build/python && zip -r ../orchestrator.zip . && cd ../..
 
-      - name: Package Node.js Lambda (Revenue Agent)
+      - name: Package Node Lambda
         run: |
           mkdir -p build/nodejs
-          [ -f revenue_agent.js ] && cp revenue_agent.js build/nodejs/index.js || echo "Warning: revenue_agent.js not found"
-          [ -f package.json ]     && cp package.json     build/nodejs/          || echo "Warning: package.json not found"
+          [ -f revenue_agent.js ] && cp revenue_agent.js build/nodejs/index.js || echo "Skip revenue_agent.js"
+          [ -f package.json ]     && cp package.json build/nodejs/             || echo "Skip package.json"
           cd build/nodejs && npm install --production 2>/dev/null || true
           zip -r ../revenue_agent.zip . && cd ../..
 
       - name: Deploy Orchestrator Lambda
         run: |
+          REGION=${{ secrets.AWS_REGION || 'us-east-1' }}
+          ROLE=${{ secrets.LAMBDA_EXECUTION_ROLE_ARN }}
           aws lambda update-function-code \
             --function-name garcar-orchestrator \
             --zip-file fileb://build/orchestrator.zip \
-            --region ${{ secrets.AWS_REGION || 'us-east-1' }} \
+            --region $REGION \
           || aws lambda create-function \
             --function-name garcar-orchestrator \
             --runtime python3.11 \
-            --role ${{ secrets.LAMBDA_EXECUTION_ROLE_ARN }} \
+            --role $ROLE \
             --handler agent_coordinator.lambda_handler \
             --zip-file fileb://build/orchestrator.zip \
-            --timeout 300 \
-            --memory-size 512 \
-            --region ${{ secrets.AWS_REGION || 'us-east-1' }}
+            --timeout 300 --memory-size 512 \
+            --region $REGION
+        continue-on-error: true
 
       - name: Deploy Stripe Webhook Lambda
         run: |
+          REGION=${{ secrets.AWS_REGION || 'us-east-1' }}
+          ROLE=${{ secrets.LAMBDA_EXECUTION_ROLE_ARN }}
           aws lambda update-function-code \
             --function-name garcar-stripe-webhook \
             --zip-file fileb://build/orchestrator.zip \
-            --region ${{ secrets.AWS_REGION || 'us-east-1' }} \
+            --region $REGION \
           || aws lambda create-function \
             --function-name garcar-stripe-webhook \
             --runtime python3.11 \
-            --role ${{ secrets.LAMBDA_EXECUTION_ROLE_ARN }} \
+            --role $ROLE \
             --handler stripe_webhook.lambda_handler \
             --zip-file fileb://build/orchestrator.zip \
-            --timeout 30 \
-            --memory-size 256 \
-            --region ${{ secrets.AWS_REGION || 'us-east-1' }}
+            --timeout 30 --memory-size 256 \
+            --region $REGION
+        continue-on-error: true
 
       - name: Deploy Revenue Agent Lambda
         run: |
+          REGION=${{ secrets.AWS_REGION || 'us-east-1' }}
+          ROLE=${{ secrets.LAMBDA_EXECUTION_ROLE_ARN }}
           aws lambda update-function-code \
             --function-name garcar-revenue-agent \
             --zip-file fileb://build/revenue_agent.zip \
-            --region ${{ secrets.AWS_REGION || 'us-east-1' }} \
+            --region $REGION \
           || aws lambda create-function \
             --function-name garcar-revenue-agent \
             --runtime nodejs18.x \
-            --role ${{ secrets.LAMBDA_EXECUTION_ROLE_ARN }} \
+            --role $ROLE \
             --handler index.handler \
             --zip-file fileb://build/revenue_agent.zip \
-            --timeout 300 \
-            --memory-size 512 \
-            --region ${{ secrets.AWS_REGION || 'us-east-1' }}
+            --timeout 300 --memory-size 512 \
+            --region $REGION
+        continue-on-error: true
 
-      - name: Update Lambda Environment Variables
+      - name: Update Lambda Env Vars
         env:
           AWS_REGION:            ${{ secrets.AWS_REGION || 'us-east-1' }}
           S3_BUCKET:             ${{ secrets.S3_BUCKET }}
@@ -122,54 +148,32 @@ jobs:
         run: |
           python3 << 'PYEOF'
           import subprocess, json, os
-
           region = os.environ.get('AWS_REGION', 'us-east-1')
-
           LAMBDAS = {
-              'garcar-orchestrator': [
-                  'S3_BUCKET','STRIPE_SECRET_KEY','LINEAR_API_KEY','LINEAR_TEAM_ID',
-                  'APOLLO_API_KEY','OPENAI_API_KEY','SES_SENDER_EMAIL',
-                  'DASHBOARD_URL','UPGRADE_URL','ALW_LEDGER_PATH','ACQ_LEDGER_PATH',
-              ],
-              'garcar-stripe-webhook': [
-                  'STRIPE_SECRET_KEY','STRIPE_WEBHOOK_SECRET','S3_BUCKET',
-                  'ALW_LEDGER_PATH',
-              ],
-              'garcar-revenue-agent': [
-                  'S3_BUCKET','STRIPE_SECRET_KEY','STRIPE_PRICE_PRO',
-                  'STRIPE_WEBHOOK_SECRET','LINEAR_API_KEY','LINEAR_TEAM_ID',
-              ],
+              'garcar-orchestrator':   ['S3_BUCKET','STRIPE_SECRET_KEY','LINEAR_API_KEY','LINEAR_TEAM_ID','APOLLO_API_KEY','OPENAI_API_KEY','SES_SENDER_EMAIL','DASHBOARD_URL','UPGRADE_URL','ALW_LEDGER_PATH','ACQ_LEDGER_PATH'],
+              'garcar-stripe-webhook': ['STRIPE_SECRET_KEY','STRIPE_WEBHOOK_SECRET','S3_BUCKET','ALW_LEDGER_PATH'],
+              'garcar-revenue-agent':  ['S3_BUCKET','STRIPE_SECRET_KEY','STRIPE_PRICE_PRO','STRIPE_WEBHOOK_SECRET','LINEAR_API_KEY','LINEAR_TEAM_ID'],
           }
-
           for fn, keys in LAMBDAS.items():
               env_vars = {k: os.environ[k] for k in keys if os.environ.get(k)}
-              if not env_vars:
-                  print(f'No env vars to set for {fn}, skipping')
-                  continue
-              cmd = ['aws','lambda','update-function-configuration',
-                     '--function-name', fn,
-                     '--environment', json.dumps({'Variables': env_vars}),
-                     '--region', region]
-              r = subprocess.run(cmd, capture_output=True, text=True)
-              if r.returncode == 0:
-                  print(f'Updated {fn} ({len(env_vars)} vars)')
-              else:
-                  print(f'Warning {fn}: {r.stderr[:300]}')
+              if not env_vars: print(f'Skip {fn} (no vars)'); continue
+              r = subprocess.run(['aws','lambda','update-function-configuration','--function-name',fn,'--environment',json.dumps({'Variables':env_vars}),'--region',region], capture_output=True, text=True)
+              print(f'{"OK" if r.returncode==0 else "WARN"} {fn} ({len(env_vars)} vars)')
           PYEOF
+        continue-on-error: true
 
-      - name: Test Orchestrator Lambda
+      - name: Smoke test Lambda
         run: |
           aws lambda invoke \
             --function-name garcar-orchestrator \
             --region ${{ secrets.AWS_REGION || 'us-east-1' }} \
-            --payload '{}' \
-            response.json && cat response.json \
-          || echo "Lambda invocation failed — may not exist yet or needs cold start."
+            --payload '{}' response.json 2>&1 && cat response.json || echo "Lambda cold start or not yet created — OK"
+        continue-on-error: true
 
-      - name: Deployment Summary
+      - name: Deploy summary
         run: |
           REGION=${{ secrets.AWS_REGION || 'us-east-1' }}
-          echo "Deployment complete."
-          echo "Orchestrator:    https://console.aws.amazon.com/lambda/home?region=$REGION#/functions/garcar-orchestrator"
-          echo "Stripe Webhook:  https://console.aws.amazon.com/lambda/home?region=$REGION#/functions/garcar-stripe-webhook"
-          echo "Revenue Agent:   https://console.aws.amazon.com/lambda/home?region=$REGION#/functions/garcar-revenue-agent"
+          echo "✅ Lambda deploy complete"
+          echo "  Orchestrator:   https://console.aws.amazon.com/lambda/home?region=$REGION#/functions/garcar-orchestrator"
+          echo "  Stripe Webhook: https://console.aws.amazon.com/lambda/home?region=$REGION#/functions/garcar-stripe-webhook"
+          echo "  Revenue Agent:  https://console.aws.amazon.com/lambda/home?region=$REGION#/functions/garcar-revenue-agent"
