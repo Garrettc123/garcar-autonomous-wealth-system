@@ -14,5 +14,21 @@
     },
     "source": "cli",
     "status": "allocated"
+  },
+  {
+    "timestamp": "2026-03-27T14:50:07.335016Z",
+    "gross_revenue": 10890.0,
+    "alw_total": 1960.2,
+    "buckets": {
+      "home": 588.06,
+      "family": 490.05,
+      "food_dining": 235.22,
+      "transportation": 196.02,
+      "church_giving": 196.02,
+      "personal": 156.82,
+      "experiences": 98.01
+    },
+    "source": "cli",
+    "status": "allocated"
   }
 ]
