@@ -15,6 +15,15 @@ jobs:
       contents: write
 
     steps:
+      - name: Check secrets
+        env:
+          GH_TOKEN_VAL: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN_VAL" ]; then
+            echo "⚠️ GITHUB_TOKEN not configured — skipping"
+            exit 0
+          fi
+
       - name: Install GitHub CLI
         run: |
           type gh >/dev/null 2>&1 || (

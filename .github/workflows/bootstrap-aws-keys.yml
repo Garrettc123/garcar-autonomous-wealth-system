@@ -1,4 +1,4 @@
-name: 🔑 One-Time Bootstrap (AWS Keys → OIDC)
+name: "\U0001F511 One-Time Bootstrap (AWS Keys → OIDC)"
 # Run this workflow ONCE after adding your AWS keys as GitHub secrets.
 # It will:
 #   1. Use those static keys to create the OIDC role in IAM
@@ -26,6 +26,16 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check secrets
+        env:
+          AWS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          if [ -z "$AWS_KEY" ] || [ -z "$AWS_SECRET" ]; then
+            echo "⚠️ AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY not configured — skipping"
+            exit 0
+          fi
 
       - name: Configure AWS (static keys — one-time only)
         uses: aws-actions/configure-aws-credentials@v4

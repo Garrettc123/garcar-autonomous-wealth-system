@@ -1,4 +1,4 @@
-name: ✅ Auto Approve & Merge All PRs
+name: "\u2705 Auto Approve & Merge All PRs"
 # Automatically approves and merges every non-draft PR.
 # Active for 5 weeks from deployment: 2026-03-19 through 2026-04-23.
 # After expiry the workflow exits cleanly without merging.
@@ -46,6 +46,15 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Check secrets
+        env:
+          GH_TOKEN_VAL: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN_VAL" ]; then
+            echo "⚠️ GITHUB_TOKEN not configured — skipping"
+            exit 0
+          fi
 
       - name: Approve and merge PRs
         if: steps.window.outputs.expired == 'false'
@@ -128,12 +137,12 @@ jobs:
           REPO:     ${{ github.repository }}
         run: |
           REMAINING=$(python3 -c "
-from datetime import date
-expiry = date(2026, 4, 23)
-today = date.today()
-days = (expiry - today).days
-print(f'{days} days remaining in auto-approve window (expires 2026-04-23).')
-")
+          from datetime import date
+          expiry = date(2026, 4, 23)
+          today = date.today()
+          days = (expiry - today).days
+          print(f'{days} days remaining in auto-approve window (expires 2026-04-23).')
+          ")
           echo ""
           echo "✅ Auto-approve cycle complete."
           echo "   $REMAINING"

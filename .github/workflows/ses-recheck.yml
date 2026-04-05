@@ -5,7 +5,7 @@ name: 📧 SES Verification Recheck
 
 on:
   schedule:
-    - cron: '*/10 * * * *'  # every 10 minutes
+    - cron: '0 8 * * *'  # daily at 8 AM UTC
   workflow_dispatch:
 
 permissions:
@@ -19,6 +19,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Check AWS secrets
+        env:
+          AWS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        run: |
+          if [ -z "$AWS_KEY" ]; then
+            echo "⚠️ AWS_ACCESS_KEY_ID not configured — skipping"
+            exit 0
+          fi
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:

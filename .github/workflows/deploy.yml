@@ -1,8 +1,7 @@
-name: 🚀 Deploy to AWS Lambda
-# FIXED: Removed push trigger — deploy now only fires from:
+name: "\U0001F680 Deploy to AWS Lambda"
+# Deploy fires from:
 #   1. master-revenue-trigger.yml (Stage 3, workflow_call)
 #   2. Manual workflow_dispatch
-# This prevents double-deploy races when pushes hit main.
 
 on:
   workflow_call: {}
@@ -30,6 +29,22 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check secrets
+        env:
+          AWS_ACCOUNT: ${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          LAMBDA_ROLE: ${{ secrets.LAMBDA_EXECUTION_ROLE_ARN }}
+        run: |
+          if [ -z "$AWS_ACCOUNT" ] && [ -z "$AWS_KEY" ]; then
+            echo "⚠️ Neither AWS_ACCOUNT_ID (OIDC) nor AWS_ACCESS_KEY_ID (static) configured — skipping"
+            exit 0
+          fi
+          if [ -z "$LAMBDA_ROLE" ]; then
+            echo "⚠️ LAMBDA_EXECUTION_ROLE_ARN not configured — skipping"
+            exit 0
+          fi
 
       - name: AWS Auth (OIDC)
         id: oidc
@@ -76,57 +91,63 @@ jobs:
           zip -r ../revenue_agent.zip . && cd ../..
 
       - name: Deploy Orchestrator Lambda
+        env:
+          DEPLOY_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          LAMBDA_ROLE: ${{ secrets.LAMBDA_EXECUTION_ROLE_ARN }}
         run: |
-          REGION=${{ secrets.AWS_REGION || 'us-east-1' }}
-          ROLE=${{ secrets.LAMBDA_EXECUTION_ROLE_ARN }}
+          if [ -z "$LAMBDA_ROLE" ]; then echo "⚠️ LAMBDA_EXECUTION_ROLE_ARN not set — skipping"; exit 0; fi
           aws lambda update-function-code \
             --function-name garcar-orchestrator \
             --zip-file fileb://build/orchestrator.zip \
-            --region $REGION \
+            --region "$DEPLOY_REGION" \
           || aws lambda create-function \
             --function-name garcar-orchestrator \
             --runtime python3.11 \
-            --role $ROLE \
+            --role "$LAMBDA_ROLE" \
             --handler agent_coordinator.lambda_handler \
             --zip-file fileb://build/orchestrator.zip \
             --timeout 300 --memory-size 512 \
-            --region $REGION
+            --region "$DEPLOY_REGION"
         continue-on-error: true
 
       - name: Deploy Stripe Webhook Lambda
+        env:
+          DEPLOY_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          LAMBDA_ROLE: ${{ secrets.LAMBDA_EXECUTION_ROLE_ARN }}
         run: |
-          REGION=${{ secrets.AWS_REGION || 'us-east-1' }}
-          ROLE=${{ secrets.LAMBDA_EXECUTION_ROLE_ARN }}
+          if [ -z "$LAMBDA_ROLE" ]; then echo "⚠️ LAMBDA_EXECUTION_ROLE_ARN not set — skipping"; exit 0; fi
           aws lambda update-function-code \
             --function-name garcar-stripe-webhook \
             --zip-file fileb://build/orchestrator.zip \
-            --region $REGION \
+            --region "$DEPLOY_REGION" \
           || aws lambda create-function \
             --function-name garcar-stripe-webhook \
             --runtime python3.11 \
-            --role $ROLE \
+            --role "$LAMBDA_ROLE" \
             --handler stripe_webhook.lambda_handler \
             --zip-file fileb://build/orchestrator.zip \
             --timeout 30 --memory-size 256 \
-            --region $REGION
+            --region "$DEPLOY_REGION"
         continue-on-error: true
 
       - name: Deploy Revenue Agent Lambda
+        env:
+          DEPLOY_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          LAMBDA_ROLE: ${{ secrets.LAMBDA_EXECUTION_ROLE_ARN }}
         run: |
-          REGION=${{ secrets.AWS_REGION || 'us-east-1' }}
-          ROLE=${{ secrets.LAMBDA_EXECUTION_ROLE_ARN }}
+          if [ -z "$LAMBDA_ROLE" ]; then echo "⚠️ LAMBDA_EXECUTION_ROLE_ARN not set — skipping"; exit 0; fi
           aws lambda update-function-code \
             --function-name garcar-revenue-agent \
             --zip-file fileb://build/revenue_agent.zip \
-            --region $REGION \
+            --region "$DEPLOY_REGION" \
           || aws lambda create-function \
             --function-name garcar-revenue-agent \
             --runtime nodejs18.x \
-            --role $ROLE \
+            --role "$LAMBDA_ROLE" \
             --handler index.handler \
             --zip-file fileb://build/revenue_agent.zip \
             --timeout 300 --memory-size 512 \
-            --region $REGION
+            --region "$DEPLOY_REGION"
         continue-on-error: true
 
       - name: Update Lambda Env Vars
@@ -163,17 +184,20 @@ jobs:
         continue-on-error: true
 
       - name: Smoke test Lambda
+        env:
+          DEPLOY_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
         run: |
           aws lambda invoke \
             --function-name garcar-orchestrator \
-            --region ${{ secrets.AWS_REGION || 'us-east-1' }} \
+            --region "$DEPLOY_REGION" \
             --payload '{}' response.json 2>&1 && cat response.json || echo "Lambda cold start or not yet created — OK"
         continue-on-error: true
 
       - name: Deploy summary
+        env:
+          DEPLOY_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
         run: |
-          REGION=${{ secrets.AWS_REGION || 'us-east-1' }}
           echo "✅ Lambda deploy complete"
-          echo "  Orchestrator:   https://console.aws.amazon.com/lambda/home?region=$REGION#/functions/garcar-orchestrator"
-          echo "  Stripe Webhook: https://console.aws.amazon.com/lambda/home?region=$REGION#/functions/garcar-stripe-webhook"
-          echo "  Revenue Agent:  https://console.aws.amazon.com/lambda/home?region=$REGION#/functions/garcar-revenue-agent"
+          echo "  Orchestrator:   https://console.aws.amazon.com/lambda/home?region=$DEPLOY_REGION#/functions/garcar-orchestrator"
+          echo "  Stripe Webhook: https://console.aws.amazon.com/lambda/home?region=$DEPLOY_REGION#/functions/garcar-stripe-webhook"
+          echo "  Revenue Agent:  https://console.aws.amazon.com/lambda/home?region=$DEPLOY_REGION#/functions/garcar-revenue-agent"

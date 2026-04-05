@@ -1,11 +1,9 @@
-name: 🔄 Auto-Rotate & Validate Keys
-# Reusable (workflow_call) + standalone weekly rotation
+name: "\U0001F504 Auto-Rotate & Validate Keys"
+# Reusable (workflow_call) + standalone (workflow_dispatch)
 
 on:
   workflow_call: {}
   workflow_dispatch: {}
-  schedule:
-    - cron: '0 5 * * 0'  # Sundays midnight CDT
 
 permissions:
   id-token: write
@@ -26,6 +24,17 @@ jobs:
           python-version: '3.11'
 
       - run: pip install boto3 pynacl requests -q
+
+      - name: Check secrets
+        env:
+          AWS_ACCOUNT: ${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          if [ -z "$AWS_ACCOUNT" ] && [ -z "$AWS_KEY" ]; then
+            echo "⚠️ Neither AWS_ACCOUNT_ID (OIDC) nor AWS_ACCESS_KEY_ID (static) configured — skipping"
+            exit 0
+          fi
 
       - name: AWS Auth (OIDC)
         uses: aws-actions/configure-aws-credentials@v4

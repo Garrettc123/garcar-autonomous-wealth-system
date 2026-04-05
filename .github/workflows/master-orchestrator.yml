@@ -6,8 +6,6 @@ name: 🤖 Garcar Master Orchestrator
 #   - push: only on Python source files (not workflow files) to avoid race
 
 on:
-  schedule:
-    - cron: '0 12 * * 1-5'   # 7 AM CDT Mon-Fri
   push:
     branches: [main]
     paths:
@@ -43,6 +41,16 @@ jobs:
     timeout-minutes: 45
 
     steps:
+      - name: Check AWS secrets
+        env:
+          AWS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          OIDC_ROLE: ${{ secrets.OIDC_ROLE_ARN }}
+        run: |
+          if [ -z "$AWS_KEY" ] && [ -z "$OIDC_ROLE" ]; then
+            echo "⚠️ AWS credentials not configured — skipping"
+            exit 0
+          fi
+
       - uses: actions/checkout@v4
 
       - name: AWS Auth (OIDC)

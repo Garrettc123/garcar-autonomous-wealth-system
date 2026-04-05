@@ -12,8 +12,6 @@ name: 💰 MASTER REVENUE TRIGGER
 #   Stage 10 — System monitor (self-heal)
 
 on:
-  schedule:
-    - cron: '0 13 * * 1-5'   # 8 AM CDT Mon-Fri
   workflow_dispatch:
     inputs:
       skip_deploy:
@@ -55,6 +53,15 @@ jobs:
       ses_verified: ${{ steps.check.outputs.ses_verified }}
 
     steps:
+      - name: Check AWS secrets
+        env:
+          AWS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        run: |
+          if [ -z "$AWS_KEY" ]; then
+            echo "⚠️ AWS_ACCESS_KEY_ID not configured — skipping"
+            exit 0
+          fi
+
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:

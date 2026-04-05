@@ -1,11 +1,9 @@
-name: 💸 ALW Wealth Allocator
-# Reusable (workflow_call) + standalone (workflow_dispatch + schedule)
+name: "\U0001F4B8 ALW Wealth Allocator"
+# Reusable (workflow_call) + standalone (workflow_dispatch)
 
 on:
   workflow_call: {}
   workflow_dispatch: {}
-  schedule:
-    - cron: '0 14 * * 5'  # Fridays 9 AM CDT
 
 permissions:
   contents: write
@@ -24,6 +22,21 @@ jobs:
           python-version: '3.11'
 
       - run: pip install boto3 requests stripe -q
+
+      - name: Check secrets
+        env:
+          AWS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          STRIPE_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+        run: |
+          if [ -z "$AWS_KEY" ] || [ -z "$AWS_SECRET" ]; then
+            echo "⚠️ AWS credentials not configured — skipping"
+            exit 0
+          fi
+          if [ -z "$STRIPE_KEY" ]; then
+            echo "⚠️ STRIPE_SECRET_KEY not configured — skipping"
+            exit 0
+          fi
 
       - name: AWS Auth
         uses: aws-actions/configure-aws-credentials@v4

@@ -1,5 +1,5 @@
-name: 🎯 Customer Acquisition Loop
-# Reusable workflow (workflow_call) AND standalone (workflow_dispatch + schedule).
+name: "\U0001F3AF Customer Acquisition Loop"
+# Reusable workflow (workflow_call) AND standalone (workflow_dispatch).
 # Called by master-revenue-trigger at Stage 4 with injected inputs.
 
 on:
@@ -32,8 +32,6 @@ on:
       niche_query:
         required: false
         default: ''
-  schedule:
-    - cron: '30 13 * * 1-5'  # 8:30 AM CDT Mon-Fri (standalone fallback)
 
 permissions:
   contents: write
@@ -52,6 +50,26 @@ jobs:
           python-version: '3.11'
 
       - run: pip install -r requirements.txt -q
+
+      - name: Check secrets
+        env:
+          AWS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          APOLLO_KEY: ${{ secrets.APOLLO_API_KEY }}
+          SES_EMAIL: ${{ secrets.SES_SENDER_EMAIL }}
+        run: |
+          if [ -z "$AWS_KEY" ] || [ -z "$AWS_SECRET" ]; then
+            echo "⚠️ AWS credentials not configured — skipping"
+            exit 0
+          fi
+          if [ -z "$APOLLO_KEY" ]; then
+            echo "⚠️ APOLLO_API_KEY not configured — skipping"
+            exit 0
+          fi
+          if [ -z "$SES_EMAIL" ]; then
+            echo "⚠️ SES_SENDER_EMAIL not configured — skipping"
+            exit 0
+          fi
 
       - name: AWS Auth
         uses: aws-actions/configure-aws-credentials@v4
