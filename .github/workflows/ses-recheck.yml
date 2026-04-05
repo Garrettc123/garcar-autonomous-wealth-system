@@ -1,11 +1,8 @@
 name: 📧 SES Verification Recheck
-# Polls SES every 10 min until noreply@garcar.io is verified,
-# then automatically triggers the full revenue bootstrap.
-# Stops itself once verified.
+# Checks SES verification status and triggers revenue bootstrap if verified.
+# Run manually via workflow_dispatch when needed.
 
 on:
-  schedule:
-    - cron: '0 8 * * *'  # daily at 8 AM UTC
   workflow_dispatch:
 
 permissions:
@@ -65,7 +62,7 @@ jobs:
                   env={**os.environ, 'GH_TOKEN': os.environ.get('GH_TOKEN', '')})
                   print(result.stdout or result.stderr)
               else:
-                  print(f'Not verified yet ({status}). Will recheck in 10 minutes.')
+                  print(f'Not verified yet ({status}). Run this workflow again after verifying.')
           except Exception as e:
               print(f'Error: {e}')
           PYEOF

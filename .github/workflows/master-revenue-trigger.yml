@@ -12,6 +12,8 @@ name: 💰 MASTER REVENUE TRIGGER
 #   Stage 10 — System monitor (self-heal)
 
 on:
+  schedule:
+    - cron: '0 8 * * *'
   workflow_dispatch:
     inputs:
       skip_deploy:
@@ -185,6 +187,16 @@ jobs:
           pip install boto3 pynacl requests stripe openai twilio -q
           npm install 2>/dev/null || true
 
+      - name: Check secrets
+        env:
+          AWS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          if [ -z "$AWS_KEY" ] || [ -z "$AWS_SECRET" ]; then
+            echo "⚠️ AWS credentials not configured — skipping"
+            exit 0
+          fi
+
       - name: AWS Auth
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -203,10 +215,10 @@ jobs:
           LINEAR_API_KEY:     ${{ secrets.LINEAR_API_KEY }}
           SES_SENDER_EMAIL:   ${{ secrets.SES_SENDER_EMAIL }}
           S3_BUCKET:          ${{ secrets.S3_BUCKET || 'garcar-revenue-data' }}
+          CYCLE_COUNT:        ${{ github.event.inputs.cycles || '1' }}
         run: |
-          CYCLES=${{ github.event.inputs.cycles || '1' }}
-          for i in $(seq 1 $CYCLES); do
-            echo "=== Orchestrator Cycle $i of $CYCLES ==="
+          for i in $(seq 1 "$CYCLE_COUNT"); do
+            echo "=== Orchestrator Cycle $i of $CYCLE_COUNT ==="
             python orchestrator_master.py
           done
 
@@ -226,6 +238,21 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install boto3 requests stripe openai twilio -q
+
+      - name: Check secrets
+        env:
+          AWS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          STRIPE_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+        run: |
+          if [ -z "$AWS_KEY" ] || [ -z "$AWS_SECRET" ]; then
+            echo "⚠️ AWS credentials not configured — skipping"
+            exit 0
+          fi
+          if [ -z "$STRIPE_KEY" ]; then
+            echo "⚠️ STRIPE_SECRET_KEY not configured — skipping"
+            exit 0
+          fi
 
       - name: AWS Auth
         uses: aws-actions/configure-aws-credentials@v4
@@ -262,6 +289,16 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install boto3 -q
+
+      - name: Check secrets
+        env:
+          AWS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          if [ -z "$AWS_KEY" ] || [ -z "$AWS_SECRET" ]; then
+            echo "⚠️ AWS credentials not configured — skipping"
+            exit 0
+          fi
 
       - name: AWS Auth
         uses: aws-actions/configure-aws-credentials@v4
@@ -304,6 +341,16 @@ jobs:
           python-version: '3.11'
       - run: pip install boto3 requests -q
 
+      - name: Check secrets
+        env:
+          AWS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          if [ -z "$AWS_KEY" ] || [ -z "$AWS_SECRET" ]; then
+            echo "⚠️ AWS credentials not configured — skipping"
+            exit 0
+          fi
+
       - name: AWS Auth
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -330,28 +377,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Summary
+        env:
+          HEALTH_RESULT: ${{ needs.health-check.result }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          ACQUIRE_RESULT: ${{ needs.acquire.result }}
+          ORCHESTRATE_RESULT: ${{ needs.orchestrate.result }}
+          COMPOUND_RESULT: ${{ needs.compound.result }}
+          AMPLIFY_RESULT: ${{ needs.amplify.result }}
+          ALW_RESULT: ${{ needs.alw.result }}
+          MONITOR_RESULT: ${{ needs.monitor.result }}
+          REPO: ${{ github.repository }}
         run: |
           python3 << 'PYEOF'
           import json, os
           results = {
-              'Health':       '${{ needs.health-check.result }}',
-              'Deploy':       '${{ needs.deploy.result }}',
-              'Acquire':      '${{ needs.acquire.result }}',
-              'Orchestrate':  '${{ needs.orchestrate.result }}',
-              'Compound':     '${{ needs.compound.result }}',
-              'Amplify':      '${{ needs.amplify.result }}',
-              'ALW':          '${{ needs.alw.result }}',
-              'Monitor':      '${{ needs.monitor.result }}',
+              'Health':       os.environ.get('HEALTH_RESULT', 'unknown'),
+              'Deploy':       os.environ.get('DEPLOY_RESULT', 'unknown'),
+              'Acquire':      os.environ.get('ACQUIRE_RESULT', 'unknown'),
+              'Orchestrate':  os.environ.get('ORCHESTRATE_RESULT', 'unknown'),
+              'Compound':     os.environ.get('COMPOUND_RESULT', 'unknown'),
+              'Amplify':      os.environ.get('AMPLIFY_RESULT', 'unknown'),
+              'ALW':          os.environ.get('ALW_RESULT', 'unknown'),
+              'Monitor':      os.environ.get('MONITOR_RESULT', 'unknown'),
           }
           print('\n' + '='*64)
-          print('  GARCAR MASTER PIPELINE — 10-STAGE SUMMARY')
+          print('  GARCAR MASTER PIPELINE -- 10-STAGE SUMMARY')
           print('='*64)
           for stage, result in results.items():
-              icon = '✅' if result == 'success' else '⚠️' if result == 'skipped' else '❌'
-              print(f'  {icon}  {stage:<16} {result}')
+              icon = 'OK' if result == 'success' else 'SKIP' if result == 'skipped' else 'FAIL'
+              print(f'  [{icon}]  {stage:<16} {result}')
           passed = sum(1 for r in results.values() if r in ('success','skipped'))
           print(f'\n  {passed}/{len(results)} stages passed')
-          print('  Monitor: https://github.com/${{ github.repository }}/actions')
+          repo = os.environ.get('REPO', '')
+          print(f'  Monitor: https://github.com/{repo}/actions')
           print('='*64)
           try:
               with open('acquisition_ledger.json') as f:
@@ -365,8 +423,8 @@ jobs:
                   alw = json.load(f)
               total_rev = sum(e.get('gross_revenue',0) for e in alw)
               total_alw = sum(e.get('alw_total',0) for e in alw)
-              print(f'  Gross revenue: \${total_rev:,.2f}')
-              print(f'  ALW allocated: \${total_alw:,.2f}')
+              print(f'  Gross revenue: ${total_rev:,.2f}')
+              print(f'  ALW allocated: ${total_alw:,.2f}')
           except: pass
           print('='*64)
           PYEOF

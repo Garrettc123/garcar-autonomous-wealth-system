@@ -1,9 +1,7 @@
-name: 🤖 Garcar Master Orchestrator
-# FIXED: removed push:branches trigger (was racing with deploy.yml on every push).
-# Now fires:
-#   - Schedule: 7 AM CDT Mon-Fri (12:00 UTC)  — 30-min BEFORE master-revenue-trigger
+name: "\U0001F916 Garcar Master Orchestrator"
+# Fires:
 #   - workflow_dispatch: manual with cycle_count param
-#   - push: only on Python source files (not workflow files) to avoid race
+#   - push: only on Python source files (not workflow files)
 
 on:
   push:
@@ -36,18 +34,29 @@ permissions:
 
 jobs:
   orchestrate:
-    name: 🤖 All Systems
+    name: "\U0001F916 All Systems"
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
     steps:
-      - name: Check AWS secrets
+      - name: Check secrets
         env:
+          AWS_ACCOUNT: ${{ secrets.AWS_ACCOUNT_ID }}
           AWS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          OIDC_ROLE: ${{ secrets.OIDC_ROLE_ARN }}
+          AWS_SECRET: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          STRIPE_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          OPENAI_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          if [ -z "$AWS_KEY" ] && [ -z "$OIDC_ROLE" ]; then
-            echo "⚠️ AWS credentials not configured — skipping"
+          if [ -z "$AWS_ACCOUNT" ] && [ -z "$AWS_KEY" ]; then
+            echo "⚠️ Neither AWS_ACCOUNT_ID (OIDC) nor AWS_ACCESS_KEY_ID (static) configured — skipping"
+            exit 0
+          fi
+          if [ -z "$STRIPE_KEY" ]; then
+            echo "⚠️ STRIPE_SECRET_KEY not configured — skipping"
+            exit 0
+          fi
+          if [ -z "$OPENAI_KEY" ]; then
+            echo "⚠️ OPENAI_API_KEY not configured — skipping"
             exit 0
           fi
 
@@ -84,7 +93,7 @@ jobs:
           pip install boto3 pynacl requests stripe openai twilio -q
           npm install 2>/dev/null || true
 
-      - name: 🔐 Sync secrets from SSM
+      - name: "\U0001F510 Sync secrets from SSM"
         env:
           GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -92,7 +101,7 @@ jobs:
         run: python secrets_provisioner.py
         continue-on-error: true
 
-      - name: 🤖 Orchestrator cycles
+      - name: "\U0001F916 Orchestrator cycles"
         env:
           GITHUB_TOKEN:       ${{ secrets.GITHUB_TOKEN }}
           AWS_REGION:         ${{ secrets.AWS_REGION || 'us-east-1' }}
@@ -103,14 +112,14 @@ jobs:
           SES_SENDER_EMAIL:   ${{ secrets.SES_SENDER_EMAIL }}
           S3_BUCKET:          ${{ secrets.S3_BUCKET || 'garcar-revenue-data' }}
           DRY_RUN:            ${{ github.event.inputs.dry_run || 'false' }}
+          CYCLE_COUNT:        ${{ github.event.inputs.cycle_count || '1' }}
         run: |
-          CYCLES=${{ github.event.inputs.cycle_count || '1' }}
-          for i in $(seq 1 $CYCLES); do
-            echo "=== Orchestrator Cycle $i of $CYCLES ==="
+          for i in $(seq 1 "$CYCLE_COUNT"); do
+            echo "=== Orchestrator Cycle $i of $CYCLE_COUNT ==="
             python orchestrator_master.py
           done
 
-      - name: 💰 Revenue compounding
+      - name: "\U0001F4B0 Revenue compounding"
         env:
           AWS_REGION:        ${{ secrets.AWS_REGION || 'us-east-1' }}
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
@@ -121,21 +130,23 @@ jobs:
         run: python revenue_compounding_loop.py
         continue-on-error: true
 
-      - name: 📈 Performance amplifier
+      - name: "\U0001F4C8 Performance amplifier"
         env:
           AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
           S3_BUCKET:  ${{ secrets.S3_BUCKET || 'garcar-revenue-data' }}
         run: python performance_amplifier.py
         continue-on-error: true
 
-      - name: 🩺 System monitor
+      - name: "\U0001FA7A System monitor"
         env:
           AWS_REGION:       ${{ secrets.AWS_REGION || 'us-east-1' }}
           SES_SENDER_EMAIL: ${{ secrets.SES_SENDER_EMAIL }}
         run: python system_monitor.py
         continue-on-error: true
 
-      - name: 📊 Summary
+      - name: "\U0001F4CA Summary"
+        env:
+          REPO: ${{ github.repository }}
         run: |
           python3 << 'PYEOF'
           import json, os
@@ -153,6 +164,7 @@ jobs:
               total = sum(e.get('gross_revenue',0) for e in alw)
               print(f'  Gross revenue logged:   ${total:,.2f}')
           except: print('  ALW ledger: not yet available')
-          print(f'  Monitor: https://github.com/${{ github.repository }}/actions')
+          repo = os.environ.get('REPO', '')
+          print(f'  Monitor: https://github.com/{repo}/actions')
           print('='*56)
           PYEOF
