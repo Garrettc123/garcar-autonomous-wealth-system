@@ -1,4 +1,4 @@
-name: 🤖 GARCAR HANDS-FREE MASTER v2 — Zero Touch Revenue
+name: 🤖 GARCAR HANDS-FREE MASTER v3 — Self-Healing Zero Touch
 
 on:
   schedule:
@@ -11,11 +11,21 @@ on:
         default: 'full'
         required: false
 
+# ── CONCURRENCY: only ONE master run at a time ──────────────────────────────
+concurrency:
+  group: garcar-master-pipeline
+  cancel-in-progress: false   # don't cancel running revenue — queue instead
+
 jobs:
   run-all:
     name: 💰 Fire All Revenue Workflows
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
+
+    # ── track failures for incident report ──────────────────────────────────
+    outputs:
+      failed_steps: ${{ steps.report.outputs.failed_steps }}
+      run_url: ${{ steps.report.outputs.run_url }}
 
     steps:
       - name: Checkout
@@ -24,92 +34,220 @@ jobs:
       - name: Setup GH CLI Auth
         run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
 
-      - name: 🔑 Garcar Zero-Key Master
-        run: gh workflow run garcar-zero-key.yml
+      - name: Init failure tracker
+        run: echo "FAILED_STEPS=" >> $GITHUB_ENV
+
+      # ── PHASE 1: AUTH & SECRETS ────────────────────────────────────────────
+      - name: 🔑 Zero-Key Master
+        id: zero_key
+        run: gh workflow run garcar-zero-key.yml || echo "FAILED_STEPS=$FAILED_STEPS zero-key" >> $GITHUB_ENV
         continue-on-error: true
 
       - name: Wait 10s
         run: sleep 10
 
       - name: 🔐 Secrets Bootstrap
-        run: gh workflow run secrets-bootstrap.yml
+        id: secrets_bootstrap
+        run: gh workflow run secrets-bootstrap.yml || echo "FAILED_STEPS=$FAILED_STEPS secrets-bootstrap" >> $GITHUB_ENV
         continue-on-error: true
 
       - name: ⚙️ Auto-Provision Secrets
-        run: gh workflow run auto-provision-secrets.yml
+        run: gh workflow run auto-provision-secrets.yml || echo "FAILED_STEPS=$FAILED_STEPS auto-provision" >> $GITHUB_ENV
         continue-on-error: true
 
       - name: 🔄 Auto-Rotate Keys
-        run: gh workflow run auto-rotate-keys.yml
+        run: gh workflow run auto-rotate-keys.yml || echo "FAILED_STEPS=$FAILED_STEPS auto-rotate" >> $GITHUB_ENV
         continue-on-error: true
 
       - name: ☁️ Bootstrap AWS Keys
-        run: gh workflow run bootstrap-aws-keys.yml
+        run: gh workflow run bootstrap-aws-keys.yml || echo "FAILED_STEPS=$FAILED_STEPS aws-bootstrap" >> $GITHUB_ENV
         continue-on-error: true
 
       - name: 🛡️ Zero-Touch Secrets
-        run: gh workflow run zero-touch-secrets.yml
+        run: gh workflow run zero-touch-secrets.yml || echo "FAILED_STEPS=$FAILED_STEPS zero-touch-secrets" >> $GITHUB_ENV
         continue-on-error: true
 
       - name: 🔍 Secrets Audit
-        run: gh workflow run secrets-audit.yml
+        run: gh workflow run secrets-audit.yml || echo "FAILED_STEPS=$FAILED_STEPS secrets-audit" >> $GITHUB_ENV
         continue-on-error: true
 
-      - name: Wait 15s (let infra settle)
+      - name: ⏳ Wait — infra settle
         run: sleep 15
 
+      # ── PHASE 2: DEPLOY ────────────────────────────────────────────────────
       - name: 🏗️ Full Deploy
-        run: gh workflow run deploy.yml
+        run: gh workflow run deploy.yml || echo "FAILED_STEPS=$FAILED_STEPS deploy" >> $GITHUB_ENV
         continue-on-error: true
 
       - name: 📧 SES Recheck
-        run: gh workflow run ses-recheck.yml
+        run: gh workflow run ses-recheck.yml || echo "FAILED_STEPS=$FAILED_STEPS ses-recheck" >> $GITHUB_ENV
         continue-on-error: true
 
-      - name: Wait 15s
+      - name: ⏳ Wait — deploy settle
         run: sleep 15
 
+      # ── PHASE 3: REVENUE ───────────────────────────────────────────────────
       - name: 💰 Master Revenue Trigger
-        run: gh workflow run master-revenue-trigger.yml
+        run: gh workflow run master-revenue-trigger.yml || echo "FAILED_STEPS=$FAILED_STEPS master-revenue" >> $GITHUB_ENV
         continue-on-error: true
 
       - name: 🚀 Revenue Bootstrap
-        run: gh workflow run revenue-bootstrap.yml
+        run: gh workflow run revenue-bootstrap.yml || echo "FAILED_STEPS=$FAILED_STEPS revenue-bootstrap" >> $GITHUB_ENV
         continue-on-error: true
 
       - name: 🎯 Customer Acquisition Loop
-        run: gh workflow run customer-acquisition-loop.yml
+        run: gh workflow run customer-acquisition-loop.yml || echo "FAILED_STEPS=$FAILED_STEPS customer-acquisition" >> $GITHUB_ENV
         continue-on-error: true
 
       - name: 📊 ALW Allocator
-        run: gh workflow run alw-allocator.yml
+        run: gh workflow run alw-allocator.yml || echo "FAILED_STEPS=$FAILED_STEPS alw-allocator" >> $GITHUB_ENV
         continue-on-error: true
 
-      - name: Wait 15s
+      - name: ⏳ Wait — revenue settle
         run: sleep 15
 
+      # ── PHASE 4: ORCHESTRATE ───────────────────────────────────────────────
       - name: 🧠 Master Orchestrator
-        run: gh workflow run master-orchestrator.yml
+        run: gh workflow run master-orchestrator.yml || echo "FAILED_STEPS=$FAILED_STEPS master-orchestrator" >> $GITHUB_ENV
         continue-on-error: true
 
       - name: 📱 Phone Trigger
-        run: gh workflow run phone-trigger.yml
+        run: gh workflow run phone-trigger.yml || echo "FAILED_STEPS=$FAILED_STEPS phone-trigger" >> $GITHUB_ENV
         continue-on-error: true
 
       - name: 🤝 Auto-Merge Copilot PRs
-        run: gh workflow run auto-merge-copilot.yml
+        run: gh workflow run auto-merge-copilot.yml || echo "FAILED_STEPS=$FAILED_STEPS auto-merge" >> $GITHUB_ENV
         continue-on-error: true
 
-      - name: 📊 Final Revenue Status
+      # ── FINAL STATUS REPORT ────────────────────────────────────────────────
+      - name: 📊 Build Status Report
+        id: report
         run: |
+          RUN_URL="https://github.com/Garrettc123/garcar-autonomous-wealth-system/actions/runs/${{ github.run_id }}"
+          echo "run_url=$RUN_URL" >> $GITHUB_OUTPUT
+          echo "failed_steps=$FAILED_STEPS" >> $GITHUB_OUTPUT
+
           echo "══════════════════════════════════════"
-          echo "  🤖 GARCAR REVENUE MACHINE FIRED"
+          echo "  🤖 GARCAR REVENUE MACHINE STATUS"
           echo "══════════════════════════════════════"
-          echo "  All 17 workflows triggered"
-          echo "  Time: $(date)"
-          echo "  Next auto-run: in 2 hours"
+          echo "  Time:   $(date)"
+          echo "  Run:    $RUN_URL"
+          if [ -z "$FAILED_STEPS" ]; then
+            echo "  Status: ✅ ALL GREEN — Zero failures"
+          else
+            echo "  Status: ⚠️  PARTIAL — Failed: $FAILED_STEPS"
+          fi
           echo "══════════════════════════════════════"
-          echo "  Actions: https://github.com/Garrettc123/garcar-autonomous-wealth-system/actions"
-          echo "  Stripe:  https://dashboard.stripe.com/payments"
+          echo "  Stripe: https://dashboard.stripe.com/payments"
           echo "══════════════════════════════════════"
-          gh run list --limit 20
+          gh run list --limit 10
+
+  # ── SELF-HEALING: Auto-create GitHub Issue on any failure ─────────────────
+  auto-incident:
+    name: 🚨 Auto Incident Report
+    runs-on: ubuntu-latest
+    needs: [run-all]
+    if: needs.run-all.outputs.failed_steps != ''
+    steps:
+      - name: Create Incident Issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const failed = `${{ needs.run-all.outputs.failed_steps }}`;
+            const runUrl = `${{ needs.run-all.outputs.run_url }}`;
+            const now = new Date().toISOString();
+
+            // Search for existing open incident issue
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'incident,auto-generated'
+            });
+
+            const title = `🚨 Pipeline Incident — ${new Date().toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'})}`;
+            const body = [
+              `## 🚨 GARCAR Pipeline Incident`,
+              ``,
+              `| Field | Value |`,
+              `|-------|-------|`,
+              `| **Time** | ${now} |`,
+              `| **Failed Steps** | \`${failed}\` |`,
+              `| **Run URL** | [View Run](${runUrl}) |`,
+              `| **Trigger** | ${context.eventName} |`,
+              ``,
+              `## Failed Workflows`,
+              failed.trim().split(' ').filter(Boolean).map(s => `- [ ] \`${s}\``).join('\n'),
+              ``,
+              `## Actions`,
+              `- [ ] Investigate failed workflows`,
+              `- [ ] Check secrets and credentials`,
+              `- [ ] Re-run master pipeline after fix`,
+              `- [ ] Close this issue when resolved`,
+              ``,
+              `---`,
+              `*Auto-generated by GARCAR Self-Healing System*`
+            ].join('\n');
+
+            if (existing.data.length > 0) {
+              // Update existing incident
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.data[0].number,
+                body: `## 🔄 Re-occurrence at ${now}\n\nFailed steps: \`${failed}\`\n\n[Run URL](${runUrl})`
+              });
+              console.log(`Updated existing incident #${existing.data[0].number}`);
+            } else {
+              // Create new incident issue
+              const issue = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['incident', 'auto-generated', 'pipeline']
+              });
+              console.log(`Created incident issue #${issue.data.number}: ${issue.data.html_url}`);
+            }
+
+  # ── SUCCESS HEALTH LOG ────────────────────────────────────────────────────
+  health-log:
+    name: ✅ Health Log
+    runs-on: ubuntu-latest
+    needs: [run-all]
+    if: needs.run-all.outputs.failed_steps == ''
+    steps:
+      - name: Log Success
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runUrl = `${{ needs.run-all.outputs.run_url }}`;
+            const now = new Date().toISOString();
+
+            // Find or create health log issue
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'health-log'
+            });
+
+            const logEntry = `✅ **${now}** — All 17 workflows fired. [Run](${runUrl})`;
+
+            if (issues.data.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issues.data[0].number,
+                body: logEntry
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: '📋 GARCAR Pipeline Health Log',
+                body: `# GARCAR Autonomous Revenue Machine — Health Log\n\nEvery successful run appended below.\n\n---\n\n${logEntry}`,
+                labels: ['health-log', 'auto-generated']
+              });
+            }
+            console.log('Health log updated.');
