@@ -1,179 +1,176 @@
 """
 Phase 3 — Capability Sharding
-Protects Reasoning Doctrine and Monetization Trigger shards via AWS KMS.
-Shards are never loaded into memory as plaintext simultaneously.
+Splits high-value reasoning and monetization logic into
+encrypted shards. Keys managed via AWS KMS.
+
+Shards:
+  SHARD_REASONING      — Reasoning Doctrine (core AI decision logic)
+  SHARD_MONETIZATION   — Monetization Trigger (revenue firing rules)
 """
+
 from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import time
-import uuid
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, Dict, Optional
 
 try:
     import boto3
-    _HAS_BOTO = True
+    from botocore.exceptions import ClientError as BotoClientError
+    BOTO_AVAILABLE = True
 except ImportError:
-    _HAS_BOTO = False
+    BOTO_AVAILABLE = False
+    BotoClientError = Exception  # type: ignore
 
+logger = logging.getLogger("garcar.sharding")
+
+
+# ---------------------------------------------------------------------------
+# Shard identifiers
+# ---------------------------------------------------------------------------
 
 class ShardID(str, Enum):
-    REASONING_DOCTRINE    = "reasoning_doctrine"
-    MONETIZATION_TRIGGER  = "monetization_trigger"
-    ACQUISITION_POLICY    = "acquisition_policy"
-    COMPLIANCE_RULESET    = "compliance_ruleset"
+    REASONING     = "SHARD_REASONING"
+    MONETIZATION  = "SHARD_MONETIZATION"
 
+
+# ---------------------------------------------------------------------------
+# Shard Descriptor
+# ---------------------------------------------------------------------------
 
 @dataclass
-class ShardContext:
-    shard_id:    ShardID
-    agent_id:    str
-    purpose:     str
-    requested_at: float
-    lease_ttl:   int = 60  # seconds before shard must be released
+class ShardDescriptor:
+    shard_id:         ShardID
+    kms_key_alias:    str    # e.g. "alias/garcar-reasoning-shard"
+    plaintext_doc:    str    # In prod, this is NEVER stored — only in memory at load time
+    encrypted_blob:   Optional[bytes] = None
+    loaded_at:        Optional[float] = None
 
+
+# ---------------------------------------------------------------------------
+# Shard Registry
+# ---------------------------------------------------------------------------
+
+SHARD_REGISTRY: Dict[ShardID, ShardDescriptor] = {
+    ShardID.REASONING: ShardDescriptor(
+        shard_id=      ShardID.REASONING,
+        kms_key_alias= os.getenv("KMS_KEY_REASONING", "alias/garcar-reasoning-shard"),
+        plaintext_doc= json.dumps({
+            "doctrine": "reasoning_v1",
+            "rules": [
+                "Prefer minimum-footprint actions",
+                "Decompose goals before acting",
+                "Validate assumption chain before external call",
+                "Flag irreversible actions for human review",
+            ],
+        }),
+    ),
+    ShardID.MONETIZATION: ShardDescriptor(
+        shard_id=      ShardID.MONETIZATION,
+        kms_key_alias= os.getenv("KMS_KEY_MONETIZATION", "alias/garcar-monetization-shard"),
+        plaintext_doc= json.dumps({
+            "doctrine": "monetization_v1",
+            "triggers": [
+                {"event": "lead_score_above_80",  "action": "stripe_checkout_link"},
+                {"event": "trial_day_7",           "action": "upsell_email"},
+                {"event": "inbound_stripe_event",  "action": "log_and_compound"},
+            ],
+        }),
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# Capability Shard Manager
+# ---------------------------------------------------------------------------
 
 class CapabilityShardManager:
     """
-    Manages encrypted capability shards.
-    Each shard is encrypted with a unique AWS KMS data key.
-    Agents are granted time-limited leases; the plaintext is never persisted.
-
-    In dev mode (no AWS credentials), uses local AES-256 simulation.
+    Encrypts shard plaintext docs at startup using AWS KMS.
+    At runtime, decrypts on-demand and exposes doctrine to agents.
+    Shards are never stored decrypted — only live in process memory.
     """
 
-    def __init__(
-        self,
-        kms_key_id:  str | None = None,
-        region:      str = "us-east-1",
-        dev_mode:    bool = False,
-    ) -> None:
-        self._kms_key_id = kms_key_id or os.getenv("KMS_KEY_ID", "")
-        self._region     = region
-        self._dev_mode   = dev_mode or not _HAS_BOTO or not self._kms_key_id
-        self._active_leases: dict[str, dict] = {}
-        self._shard_store:   dict[str, bytes] = {}  # encrypted blobs
+    def __init__(self, region: str = "us-east-1") -> None:
+        self._region = region
+        self._kms    = None
+        if BOTO_AVAILABLE:
+            self._kms = boto3.client("kms", region_name=region)
+        else:
+            logger.warning("boto3 not available — sharding in MOCK mode")
 
-        if not self._dev_mode:
-            self._kms = boto3.client("kms", region_name=self._region)
+    # ------------------------------------------------------------------
+    # Seal (encrypt) a shard
+    # ------------------------------------------------------------------
 
-    # ── Store shard ───────────────────────────────────────────────────────────
+    def seal_shard(self, shard_id: ShardID) -> bytes:
+        """Encrypt the shard's plaintext doc with its KMS key."""
+        desc = SHARD_REGISTRY[shard_id]
+        if self._kms is None:
+            # Mock mode — base64 encode as placeholder
+            blob = base64.b64encode(desc.plaintext_doc.encode())
+            desc.encrypted_blob = blob
+            logger.info("[MOCK] Shard %s sealed", shard_id.value)
+            return blob
 
-    def store_shard(self, shard_id: ShardID, plaintext_policy: dict) -> str:
-        """
-        Encrypt and store a capability shard.
-        Returns the envelope key reference (never the plaintext).
-        """
-        raw = json.dumps(plaintext_policy).encode()
+        try:
+            resp = self._kms.encrypt(
+                KeyId=desc.kms_key_alias,
+                Plaintext=desc.plaintext_doc.encode(),
+            )
+            blob = resp["CiphertextBlob"]
+            desc.encrypted_blob = blob
+            logger.info("Shard %s sealed via KMS key %s",
+                        shard_id.value, desc.kms_key_alias)
+            return blob
+        except BotoClientError as exc:
+            logger.error("KMS seal failed for %s: %s", shard_id.value, exc)
+            raise
 
-        if self._dev_mode:
-            # Dev: XOR with a fixed pad (NOT for production)
-            key  = os.getenv("DEV_SHARD_SECRET", "garcar-dev-shard-key-32bytes!!!").encode()[:32]
-            blob = bytes(b ^ key[i % len(key)] for i, b in enumerate(raw))
-            self._shard_store[shard_id.value] = blob
-            return f"dev-envelope:{shard_id.value}"
+    def seal_all(self) -> None:
+        for shard_id in ShardID:
+            self.seal_shard(shard_id)
 
-        # Production: KMS GenerateDataKey
-        dk   = self._kms.generate_data_key(KeyId=self._kms_key_id, KeySpec="AES_256")
-        from cryptography.fernet import Fernet
-        import base64
-        key_b64 = base64.urlsafe_b64encode(dk["Plaintext"])
-        token   = Fernet(key_b64).encrypt(raw)
-        envelope = {
-            "encrypted_data_key": base64.b64encode(dk["CiphertextBlob"]).decode(),
-            "ciphertext":         base64.b64encode(token).decode(),
-        }
-        self._shard_store[shard_id.value] = json.dumps(envelope).encode()
-        return f"kms:{self._kms_key_id}:{shard_id.value}"
+    # ------------------------------------------------------------------
+    # Unseal (decrypt) a shard — returns parsed doctrine dict
+    # ------------------------------------------------------------------
 
-    # ── Lease shard ───────────────────────────────────────────────────────────
+    def unseal_shard(self, shard_id: ShardID) -> Dict[str, Any]:
+        """Decrypt shard on-demand; return doctrine dict."""
+        desc = SHARD_REGISTRY[shard_id]
+        if desc.encrypted_blob is None:
+            raise RuntimeError(f"Shard {shard_id.value} has not been sealed yet")
 
-    def lease_shard(self, shard_id: ShardID, ctx: ShardContext) -> dict:
-        """
-        Decrypt and return the shard payload for the duration of a lease.
-        The caller MUST call release_shard() when done.
-        """
-        lease_id = str(uuid.uuid4())
-        plaintext = self._decrypt(shard_id)
-        self._active_leases[lease_id] = {
-            "shard_id":   shard_id.value,
-            "agent_id":   ctx.agent_id,
-            "expires_at": time.time() + ctx.lease_ttl,
-        }
-        return {"lease_id": lease_id, "payload": plaintext}
+        if self._kms is None:
+            # Mock mode
+            plaintext = base64.b64decode(desc.encrypted_blob).decode()
+            logger.info("[MOCK] Shard %s unsealed", shard_id.value)
+        else:
+            try:
+                resp = self._kms.decrypt(CiphertextBlob=desc.encrypted_blob)
+                plaintext = resp["Plaintext"].decode()
+                logger.info("Shard %s unsealed via KMS", shard_id.value)
+            except BotoClientError as exc:
+                logger.error("KMS unseal failed for %s: %s", shard_id.value, exc)
+                raise
 
-    def release_shard(self, lease_id: str) -> None:
-        """Explicitly revoke a shard lease and zero out context."""
-        self._active_leases.pop(lease_id, None)
+        desc.loaded_at = time.time()
+        return json.loads(plaintext)
 
-    def sweep_expired_leases(self) -> int:
-        """Call periodically to revoke expired leases. Returns count removed."""
-        now     = time.time()
-        expired = [lid for lid, l in self._active_leases.items() if l["expires_at"] < now]
-        for lid in expired:
-            del self._active_leases[lid]
-        return len(expired)
+    def get_reasoning_doctrine(self) -> Dict[str, Any]:
+        return self.unseal_shard(ShardID.REASONING)
 
-    def active_lease_count(self) -> int:
-        return len(self._active_leases)
-
-    # ── Internal decrypt ──────────────────────────────────────────────────────
-
-    def _decrypt(self, shard_id: ShardID) -> dict:
-        blob = self._shard_store.get(shard_id.value)
-        if blob is None:
-            raise KeyError(f"Shard '{shard_id.value}' not found — store it first")
-
-        if self._dev_mode:
-            key  = os.getenv("DEV_SHARD_SECRET", "garcar-dev-shard-key-32bytes!!!").encode()[:32]
-            raw  = bytes(b ^ key[i % len(key)] for i, b in enumerate(blob))
-            return json.loads(raw)
-
-        envelope = json.loads(blob)
-        import base64
-        plaintext_key = self._kms.decrypt(
-            CiphertextBlob=base64.b64decode(envelope["encrypted_data_key"])
-        )["Plaintext"]
-        from cryptography.fernet import Fernet
-        key_b64 = base64.urlsafe_b64encode(plaintext_key)
-        raw = Fernet(key_b64).decrypt(base64.b64decode(envelope["ciphertext"]))
-        return json.loads(raw)
+    def get_monetization_doctrine(self) -> Dict[str, Any]:
+        return self.unseal_shard(ShardID.MONETIZATION)
 
 
-# ── Pre-loaded shard templates ────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Module-level singleton
+# ---------------------------------------------------------------------------
 
-REASONING_DOCTRINE_POLICY: dict[str, Any] = {
-    "version": "1.0",
-    "doctrine": "RHNS Reasoning Doctrine",
-    "rules": [
-        "Always prefer reversible actions over irreversible ones",
-        "When in doubt, escalate to human oversight",
-        "Revenue maximisation is constrained by legal and ethical bounds",
-        "No single agent may hold more than one high-value shard at a time",
-        "Critique every action before execution — no exceptions",
-    ],
-    "max_autonomous_spend_usd": 500,
-    "requires_human_approval_above_usd": 1000,
-}
-
-MONETIZATION_TRIGGER_POLICY: dict[str, Any] = {
-    "version": "1.0",
-    "doctrine": "Monetization Trigger Doctrine",
-    "allowed_triggers": [
-        "stripe_invoice_create",
-        "stripe_subscription_activate",
-        "affiliate_commission_payout",
-        "lead_conversion_event",
-    ],
-    "prohibited_triggers": [
-        "bulk_charge_all_customers",
-        "unauthorized_payout",
-        "refund_reversal_fraud",
-    ],
-    "daily_revenue_cap_usd": 50000,
-    "alert_threshold_usd":  10000,
-}
+SHARD_MANAGER = CapabilityShardManager()

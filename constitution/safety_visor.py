@@ -1,234 +1,176 @@
 """
 Phase 4 — Safety Visor
-Parallel monitoring process using Redis for real-time pattern detection.
-Runs as an asyncio background task alongside the main orchestrator.
+Parallel monitoring process using Redis for real-time
+pattern detection and escalation flagging.
+
+Run as a standalone asyncio process alongside the FastAPI server:
+    python -m constitution.safety_visor
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import time
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Callable
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional
 
 try:
     import redis.asyncio as aioredis
-    _HAS_REDIS = True
+    REDIS_AVAILABLE = True
 except ImportError:
-    _HAS_REDIS = False
+    REDIS_AVAILABLE = False
+
+logger = logging.getLogger("garcar.visor")
+
+REDIS_URL          = os.getenv("REDIS_URL", "redis://localhost:6379")
+ACTION_STREAM      = "garcar:actions"         # Redis Stream key
+VIOLATION_STREAM   = "garcar:violations"      # Escalation sink
+PATTERN_WINDOW_SEC = 300                       # 5-minute sliding window
 
 
-class EscalationLevel(str, Enum):
-    INFO     = "INFO"
-    WARNING  = "WARNING"
-    CRITICAL = "CRITICAL"
-    SHUTDOWN = "SHUTDOWN"
-
+# ---------------------------------------------------------------------------
+# Anomaly Patterns
+# ---------------------------------------------------------------------------
 
 @dataclass
-class VisorEvent:
-    event_id:    str
-    pattern:     str
-    level:       EscalationLevel
-    detail:      str
-    agent_id:    str
-    timestamp:   float = field(default_factory=time.time)
-    suppressed:  bool  = False
-
-    def to_dict(self) -> dict:
-        return self.__dict__
+class AnomalyPattern:
+    pattern_id:   str
+    description:  str
+    # A pure function (recent_actions: list[dict]) -> bool
+    detector:     Callable[[List[Dict[str, Any]]], bool]
 
 
-# ── Detection Patterns ────────────────────────────────────────────────────────
-
-DETECTION_PATTERNS: list[dict] = [
-    {
-        "name":        "rapid_charge_burst",
-        "description": "More than 5 Stripe charges in 60 seconds",
-        "level":       EscalationLevel.CRITICAL,
-        "redis_key":   "visor:stripe_charges",
-        "window_sec":  60,
-        "threshold":   5,
-    },
-    {
-        "name":        "repeated_constitution_deny",
-        "description": "Agent receiving 3+ DENY verdicts in 5 minutes",
-        "level":       EscalationLevel.CRITICAL,
-        "redis_key":   "visor:constitution_denies",
-        "window_sec":  300,
-        "threshold":   3,
-    },
-    {
-        "name":        "high_value_action_spike",
-        "description": "More than 2 ESCALATE-class actions in 10 minutes",
-        "level":       EscalationLevel.WARNING,
-        "redis_key":   "visor:escalation_events",
-        "window_sec":  600,
-        "threshold":   2,
-    },
-    {
-        "name":        "external_egress_flood",
-        "description": "More than 20 outbound webhook calls in 60 seconds",
-        "level":       EscalationLevel.WARNING,
-        "redis_key":   "visor:webhook_calls",
-        "window_sec":  60,
-        "threshold":   20,
-    },
-    {
-        "name":        "kms_key_access_burst",
-        "description": "KMS accessed more than 3 times in 30 seconds",
-        "level":       EscalationLevel.CRITICAL,
-        "redis_key":   "visor:kms_accesses",
-        "window_sec":  30,
-        "threshold":   3,
-    },
+PATTERNS: List[AnomalyPattern] = [
+    AnomalyPattern(
+        pattern_id  = "AP-001",
+        description = "Burst rate: >20 Stripe charges in 5-minute window",
+        detector    = lambda actions: (
+            sum(1 for a in actions if a.get("action_type") == "stripe_charge") > 20
+        ),
+    ),
+    AnomalyPattern(
+        pattern_id  = "AP-002",
+        description = "Repeated constitution blocks from same agent (>3 blocks)",
+        detector    = lambda actions: (
+            sum(1 for a in actions
+                if a.get("verdict") == "BLOCKED") > 3
+        ),
+    ),
+    AnomalyPattern(
+        pattern_id  = "AP-003",
+        description = "GitHub dispatch storm: >10 dispatches in 5-minute window",
+        detector    = lambda actions: (
+            sum(1 for a in actions
+                if a.get("action_type") == "github_dispatch") > 10
+        ),
+    ),
+    AnomalyPattern(
+        pattern_id  = "AP-004",
+        description = "Suspicious total outbound spend: >$1,000 in 5-minute window",
+        detector    = lambda actions: (
+            sum(
+                float(a.get("params", {}).get("amount_usd", 0))
+                for a in actions
+                if a.get("action_type") == "stripe_charge"
+            ) > 1000.0
+        ),
+    ),
 ]
 
 
-# ── Safety Visor ──────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Safety Visor
+# ---------------------------------------------------------------------------
 
 class SafetyVisor:
     """
-    Runs as a parallel asyncio task.
-    Subscribes to a Redis stream (visor:events) and evaluates detection patterns
-    using Redis sliding-window counters.
-
-    On CRITICAL: calls escalation handlers and optionally triggers a circuit breaker.
-    On SHUTDOWN: broadcasts a shutdown signal to all agent consumers.
+    Reads the Redis action stream, maintains a rolling window of
+    recent actions, and runs anomaly pattern detectors every cycle.
+    On anomaly detection, writes an escalation record to VIOLATION_STREAM.
     """
 
-    STREAM_KEY = "visor:events"
-    SHUTDOWN_CHANNEL = "visor:shutdown"
+    def __init__(self) -> None:
+        self._redis:   Optional[Any] = None
+        self._window:  List[Dict[str, Any]] = []
+        self._last_id  = "0"
 
-    def __init__(
-        self,
-        redis_url:           str | None = None,
-        escalation_handlers: list[Callable[[VisorEvent], None]] | None = None,
-        dry_run:             bool = False,
-    ) -> None:
-        self._url       = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379")
-        self._handlers  = escalation_handlers or []
-        self._dry_run   = dry_run
-        self._running   = False
-        self._events:   list[VisorEvent] = []
-        self._redis: Any = None
+    async def _connect(self) -> None:
+        if REDIS_AVAILABLE:
+            self._redis = await aioredis.from_url(REDIS_URL, decode_responses=True)
+            logger.info("SafetyVisor connected to Redis at %s", REDIS_URL)
+        else:
+            logger.warning("Redis not available — SafetyVisor running in LOG-ONLY mode")
 
-    # ── Lifecycle ─────────────────────────────────────────────────────────────
-
-    async def start(self) -> None:
-        """Start the visor monitoring loop."""
-        self._running = True
-        if _HAS_REDIS and not self._dry_run:
-            self._redis = aioredis.from_url(self._url, decode_responses=True)
-        await asyncio.gather(
-            self._consume_stream(),
-            self._sweep_patterns(),
+    async def _read_new_actions(self) -> List[Dict[str, Any]]:
+        if self._redis is None:
+            return []
+        entries = await self._redis.xread(
+            {ACTION_STREAM: self._last_id}, count=100, block=1000
         )
+        actions = []
+        for _stream, messages in entries:
+            for msg_id, data in messages:
+                self._last_id = msg_id
+                try:
+                    action = json.loads(data.get("payload", "{}"))
+                    action["_redis_id"] = msg_id
+                    actions.append(action)
+                except json.JSONDecodeError:
+                    pass
+        return actions
 
-    async def stop(self) -> None:
-        self._running = False
-        if self._redis:
-            await self._redis.aclose()
+    def _prune_window(self) -> None:
+        cutoff = time.time() - PATTERN_WINDOW_SEC
+        self._window = [
+            a for a in self._window
+            if float(a.get("timestamp", 0)) > cutoff
+        ]
 
-    # ── Event ingestion ───────────────────────────────────────────────────────
-
-    async def record_event(self, event_type: str, agent_id: str, metadata: dict | None = None) -> None:
-        """
-        Record an event from any agent.
-        Maps event_type to the correct Redis counter key.
-        """
-        key_map = {
-            "stripe_charge":       "visor:stripe_charges",
-            "constitution_deny":   "visor:constitution_denies",
-            "escalation_event":    "visor:escalation_events",
-            "webhook_call":        "visor:webhook_calls",
-            "kms_access":          "visor:kms_accesses",
+    async def _escalate(self, pattern: AnomalyPattern) -> None:
+        escalation = {
+            "pattern_id":  pattern.pattern_id,
+            "description": pattern.description,
+            "window_size": len(self._window),
+            "timestamp":   time.time(),
         }
-        redis_key = key_map.get(event_type)
-        if redis_key and self._redis:
-            ts = time.time()
-            await self._redis.zadd(redis_key, {f"{agent_id}:{ts}": ts})
-
-        # Also push to stream for consumer
-        payload = json.dumps({"type": event_type, "agent_id": agent_id, "meta": metadata or {}, "ts": time.time()})
-        if self._redis:
-            await self._redis.xadd(self.STREAM_KEY, {"data": payload}, maxlen=10000)
-
-    # ── Pattern sweep ─────────────────────────────────────────────────────────
-
-    async def _sweep_patterns(self) -> None:
-        """Periodically evaluate all detection patterns."""
-        while self._running:
-            for pattern in DETECTION_PATTERNS:
-                await self._evaluate_pattern(pattern)
-            await asyncio.sleep(5)
-
-    async def _evaluate_pattern(self, pattern: dict) -> None:
-        if not self._redis:
-            return
-        now    = time.time()
-        window = now - pattern["window_sec"]
-        count  = await self._redis.zcount(pattern["redis_key"], window, now)
-        if count >= pattern["threshold"]:
-            import uuid
-            evt = VisorEvent(
-                event_id=str(uuid.uuid4()),
-                pattern=pattern["name"],
-                level=pattern["level"],
-                detail=f"{pattern['description']} — count={count} in {pattern['window_sec']}s",
-                agent_id="visor:sweep",
+        logger.warning("ESCALATION %s — %s", pattern.pattern_id, pattern.description)
+        if self._redis is not None:
+            await self._redis.xadd(
+                VIOLATION_STREAM,
+                {"payload": json.dumps(escalation)},
             )
-            await self._escalate(evt)
 
-    # ── Stream consumer ───────────────────────────────────────────────────────
+    async def run_cycle(self) -> None:
+        new_actions = await self._read_new_actions()
+        self._window.extend(new_actions)
+        self._prune_window()
 
-    async def _consume_stream(self) -> None:
-        if not self._redis:
-            # Dry run: sleep loop
-            while self._running:
-                await asyncio.sleep(1)
-            return
-        last_id = "0"
-        while self._running:
+        for pattern in PATTERNS:
             try:
-                msgs = await self._redis.xread({self.STREAM_KEY: last_id}, block=1000, count=50)
-                for _, entries in (msgs or []):
-                    for msg_id, data in entries:
-                        last_id = msg_id
-                        # Pass to pattern evaluation on next sweep
-            except Exception:
-                await asyncio.sleep(2)
+                if pattern.detector(self._window):
+                    await self._escalate(pattern)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Pattern %s eval error: %s", pattern.pattern_id, exc)
 
-    # ── Escalation ────────────────────────────────────────────────────────────
-
-    async def _escalate(self, event: VisorEvent) -> None:
-        self._events.append(event)
-        for handler in self._handlers:
+    async def run_forever(self, interval: float = 5.0) -> None:
+        await self._connect()
+        logger.info("SafetyVisor active — polling every %.1fs", interval)
+        while True:
             try:
-                handler(event)
-            except Exception:
-                pass
-
-        if event.level == EscalationLevel.SHUTDOWN:
-            if self._redis:
-                await self._redis.publish(self.SHUTDOWN_CHANNEL, json.dumps(event.to_dict()))
-
-        # Log to Redis
-        if self._redis:
-            await self._redis.lpush("visor:escalations", json.dumps(event.to_dict()))
-            await self._redis.ltrim("visor:escalations", 0, 999)
-
-    def get_recent_events(self, limit: int = 50) -> list[dict]:
-        return [e.to_dict() for e in self._events[-limit:]]
+                await self.run_cycle()
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Visor cycle error: %s", exc)
+            await asyncio.sleep(interval)
 
 
-# ── FastAPI integration helper ────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Entrypoint
+# ---------------------------------------------------------------------------
 
-async def start_visor_background(app: Any, redis_url: str | None = None) -> SafetyVisor:
-    """Call from app lifespan or startup event to run visor as a background task."""
-    visor = SafetyVisor(redis_url=redis_url)
-    asyncio.create_task(visor.start())
-    app.state.safety_visor = visor
-    return visor
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    visor = SafetyVisor()
+    asyncio.run(visor.run_forever())

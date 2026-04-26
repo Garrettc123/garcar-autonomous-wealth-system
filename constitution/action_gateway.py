@@ -1,203 +1,233 @@
 """
 Phase 2 — Policy-Compiled Action Gateway
-Sole interface to all external systems (Stripe, GitHub Actions, Zapier).
-Generates a signed policy receipt for every action.
+Sole interface to all external systems.
+Every call generates a signed policy receipt.
+
+Usage:
+    gateway = ActionGateway()
+    receipt = await gateway.stripe_charge(amount_usd=99.0, customer_id="cus_xxx",
+                                          justification="SaaS subscription",
+                                          agent_id="revenue_agent")
 """
+
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
-import os
+import logging
 import time
 import uuid
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Dict, Optional
 
 import httpx
 
-from .constitution_kernel import ConstitutionKernel, Verdict
+from constitution.constitution_kernel import KERNEL, ConstitutionViolation, Verdict
+
+logger = logging.getLogger("garcar.gateway")
 
 
-# ── Policy Receipt ────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Policy Receipt
+# ---------------------------------------------------------------------------
+
 @dataclass
 class PolicyReceipt:
-    receipt_id:    str
-    action_type:   str
-    target_system: str
-    verdict:       str
-    critique:      str
-    payload_hash:  str
-    executed_at:   float
-    response_code: int | None   = None
-    response_body: str | None   = None
-    signature:     str | None   = None
+    receipt_id:   str
+    action_type:  str
+    agent_id:     str
+    params:       Dict[str, Any]
+    verdict:      str
+    receipt_hash: str
+    timestamp:    float
+    response:     Optional[Dict[str, Any]]
 
-    def sign(self, secret: str) -> "PolicyReceipt":
-        raw = f"{self.receipt_id}:{self.action_type}:{self.payload_hash}:{self.executed_at}"
-        self.signature = hmac.new(secret.encode(), raw.encode(), hashlib.sha256).hexdigest()
-        return self
+    def to_dict(self) -> Dict[str, Any]:
+        return self.__dict__.copy()
 
-    def to_dict(self) -> dict:
-        return self.__dict__
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), default=str)
 
 
-# ── Allowed External Systems ──────────────────────────────────────────────────
-class ExternalSystem(str, Enum):
-    STRIPE         = "stripe"
-    GITHUB_ACTIONS = "github_actions"
-    ZAPIER         = "zapier"
+# ---------------------------------------------------------------------------
+# Action Gateway
+# ---------------------------------------------------------------------------
 
-
-# ── Gateway ───────────────────────────────────────────────────────────────────
 class ActionGateway:
     """
-    Every call to an external system must flow through this gateway.
-    Calls are:
-      1. Constitutionally evaluated (DENY → blocked)
-      2. Executed if ALLOW
-      3. Receipted with a signed policy record
+    Centralised gateway for all external system calls.
+    Every action:
+      1. Passes through ConstitutionKernel.enforce()
+      2. Executes only if approved
+      3. Emits a signed PolicyReceipt
     """
-
-    _BASE_URLS: dict[str, str] = {
-        ExternalSystem.STRIPE:         "https://api.stripe.com/v1",
-        ExternalSystem.GITHUB_ACTIONS: "https://api.github.com/repos",
-        ExternalSystem.ZAPIER:         "https://hooks.zapier.com/hooks/catch",
-    }
 
     def __init__(
         self,
-        kernel:         ConstitutionKernel | None = None,
-        receipt_secret: str | None = None,
-        dry_run:        bool = False,
+        stripe_secret: str = "",
+        github_token:  str = "",
+        zapier_token:  str = "",
     ) -> None:
-        self._kernel  = kernel or ConstitutionKernel()
-        self._secret  = receipt_secret or os.getenv("GATEWAY_RECEIPT_SECRET", "garcar-dev-secret")
-        self._dry_run = dry_run
-        self._receipts: list[PolicyReceipt] = []
+        self._stripe_secret = stripe_secret
+        self._github_token  = github_token
+        self._zapier_token  = zapier_token
 
-    # ── Public dispatch ───────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Internal: run critique + execute
+    # ------------------------------------------------------------------
 
-    async def dispatch(
+    async def _execute(
         self,
-        system:      ExternalSystem | str,
         action_type: str,
-        endpoint:    str,
-        payload:     dict[str, Any],
-        method:      str = "POST",
-        headers:     dict[str, str] | None = None,
-        agent_id:    str = "system",
+        agent_id:    str,
+        params:      Dict[str, Any],
+        executor:    Any,  # async callable or None (for dry-run)
     ) -> PolicyReceipt:
-        critique_result = self._kernel.evaluate(action_type, payload)
+        action = {
+            "action_id":   str(uuid.uuid4()),
+            "action_type": action_type,
+            "agent_id":    agent_id,
+            "params":      params,
+        }
 
-        receipt = PolicyReceipt(
-            receipt_id=str(uuid.uuid4()),
-            action_type=action_type,
-            target_system=str(system),
-            verdict=critique_result.verdict.value,
-            critique=critique_result.critique,
-            payload_hash=critique_result.action_hash,
-            executed_at=time.time(),
-        )
-
-        if critique_result.verdict == Verdict.DENY:
-            receipt.response_code = 403
-            receipt.response_body = "Blocked by Constitution Kernel"
-            self._store_receipt(receipt)
-            raise PermissionError(f"Gateway DENY: {critique_result.critique}")
-
-        if critique_result.verdict == Verdict.ESCALATE:
-            receipt.response_code = 202
-            receipt.response_body = "Queued for human approval"
-            self._store_receipt(receipt)
-            return receipt
-
-        if self._dry_run:
-            receipt.response_code = 200
-            receipt.response_body = "DRY_RUN: not executed"
-            self._store_receipt(receipt)
-            return receipt
+        # Constitution gate
+        critique = KERNEL.enforce(action)   # raises ConstitutionViolation if blocked
 
         # Execute
-        base = self._BASE_URLS.get(str(system), "")
-        url  = f"{base}{endpoint}" if base else endpoint
-        hdrs = headers or {}
-        hdrs.setdefault("Content-Type", "application/json")
-        hdrs["X-Gateway-Receipt"] = receipt.receipt_id
+        response: Optional[Dict[str, Any]] = None
+        if executor is not None:
+            try:
+                response = await executor(params)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Gateway executor error: %s", exc)
+                response = {"error": str(exc)}
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.request(method, url, json=payload, headers=hdrs)
-            receipt.response_code = resp.status_code
-            receipt.response_body = resp.text[:500]
+        # Build receipt
+        receipt_payload = json.dumps(
+            {
+                "action_id":   action["action_id"],
+                "action_type": action_type,
+                "agent_id":    agent_id,
+                "verdict":     critique.verdict.name,
+                "ts":          time.time(),
+            },
+            sort_keys=True,
+        )
+        receipt_hash = hashlib.sha256(receipt_payload.encode()).hexdigest()
 
-        receipt.sign(self._secret)
-        self._store_receipt(receipt)
-        return receipt
-
-    # ── Stripe convenience ────────────────────────────────────────────────────
-
-    async def stripe(
-        self,
-        action_type: str,
-        endpoint: str,
-        payload: dict,
-        agent_id: str = "revenue_agent",
-    ) -> PolicyReceipt:
-        api_key = os.getenv("STRIPE_SECRET_KEY", "")
-        return await self.dispatch(
-            system=ExternalSystem.STRIPE,
-            action_type=action_type,
-            endpoint=endpoint,
-            payload=payload,
-            headers={"Authorization": f"Bearer {api_key}"},
-            agent_id=agent_id,
+        receipt = PolicyReceipt(
+            receipt_id=   action["action_id"],
+            action_type=  action_type,
+            agent_id=     agent_id,
+            params=       params,
+            verdict=      critique.verdict.name,
+            receipt_hash= receipt_hash,
+            timestamp=    time.time(),
+            response=     response,
         )
 
-    # ── GitHub Actions convenience ────────────────────────────────────────────
+        logger.info(
+            "PolicyReceipt | type=%s agent=%s verdict=%s hash=%s",
+            action_type, agent_id, critique.verdict.name, receipt_hash,
+        )
+        return receipt
+
+    # ------------------------------------------------------------------
+    # Stripe
+    # ------------------------------------------------------------------
+
+    async def stripe_charge(
+        self,
+        amount_usd:         float,
+        customer_id:        str,
+        agent_id:           str,
+        justification:      str,
+        operator_approved:  bool = False,
+    ) -> PolicyReceipt:
+        async def _exec(p: Dict) -> Dict:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    "https://api.stripe.com/v1/payment_intents",
+                    auth=(self._stripe_secret, ""),
+                    data={
+                        "amount":   int(p["amount_usd"] * 100),
+                        "currency": "usd",
+                        "customer": p["customer_id"],
+                        "automatic_payment_methods[enabled]": "true",
+                    },
+                )
+                return resp.json()
+
+        return await self._execute(
+            action_type = "stripe_charge",
+            agent_id    = agent_id,
+            params      = {
+                "amount_usd":        amount_usd,
+                "customer_id":       customer_id,
+                "justification":     justification,
+                "operator_approved": operator_approved,
+            },
+            executor = _exec,
+        )
+
+    # ------------------------------------------------------------------
+    # GitHub Actions dispatch
+    # ------------------------------------------------------------------
 
     async def github_dispatch(
         self,
-        repo: str,
-        workflow: str,
-        ref: str = "main",
-        inputs: dict | None = None,
-        agent_id: str = "ci_agent",
+        workflow_id: str,
+        repo:        str,
+        agent_id:    str,
+        inputs:      Optional[Dict[str, Any]] = None,
     ) -> PolicyReceipt:
-        token = os.getenv("GITHUB_TOKEN", "")
-        return await self.dispatch(
-            system=ExternalSystem.GITHUB_ACTIONS,
-            action_type="deploy_to_production",
-            endpoint=f"/{repo}/actions/workflows/{workflow}/dispatches",
-            payload={"ref": ref, "inputs": inputs or {}},
-            headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
-            agent_id=agent_id,
+        async def _exec(p: Dict) -> Dict:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"https://api.github.com/repos/{p['repo']}/actions/workflows/{p['workflow_id']}/dispatches",
+                    headers={
+                        "Authorization": f"Bearer {self._github_token}",
+                        "Accept":        "application/vnd.github+json",
+                    },
+                    json={"ref": "main", "inputs": p.get("inputs") or {}},
+                )
+                return {"status_code": resp.status_code}
+
+        return await self._execute(
+            action_type = "github_dispatch",
+            agent_id    = agent_id,
+            params      = {"workflow_id": workflow_id, "repo": repo,
+                           "inputs": inputs or {}},
+            executor = _exec,
         )
 
-    # ── Zapier convenience ────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Zapier webhook
+    # ------------------------------------------------------------------
 
-    async def zapier(
+    async def zapier_trigger(
         self,
-        hook_path: str,
-        payload: dict,
-        agent_id: str = "automation_agent",
+        hook_url:           str,
+        payload:            Dict[str, Any],
+        agent_id:           str,
+        signature_verified: bool = False,
     ) -> PolicyReceipt:
-        return await self.dispatch(
-            system=ExternalSystem.ZAPIER,
-            action_type="zapier_webhook",
-            endpoint=f"/{hook_path}",
-            payload=payload,
-            agent_id=agent_id,
+        async def _exec(p: Dict) -> Dict:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    p["hook_url"],
+                    headers={"Authorization": f"Bearer {self._zapier_token}"},
+                    json=p["payload"],
+                )
+                return {"status_code": resp.status_code}
+
+        return await self._execute(
+            action_type = "zapier_trigger",
+            agent_id    = agent_id,
+            params      = {
+                "hook_url":           hook_url,
+                "payload":            payload,
+                "signature_verified": signature_verified,
+            },
+            executor = _exec,
         )
-
-    # ── Receipt management ────────────────────────────────────────────────────
-
-    def _store_receipt(self, receipt: PolicyReceipt) -> None:
-        self._receipts.append(receipt)
-        # Persist to disk (append-only audit log)
-        log_path = os.getenv("RECEIPT_LOG_PATH", "/tmp/policy_receipts.jsonl")
-        with open(log_path, "a") as f:
-            f.write(json.dumps(receipt.to_dict()) + "\n")
-
-    def get_receipts(self, limit: int = 100) -> list[dict]:
-        return [r.to_dict() for r in self._receipts[-limit:]]

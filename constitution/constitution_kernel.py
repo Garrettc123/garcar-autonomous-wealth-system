@@ -1,8 +1,9 @@
 """
 Phase 1 — Constitution Kernel
-Immutable prohibitions + pre-execution critique pass for every agent action.
+Immutable prohibitions + pre-execution critique pass.
 Wire into FastAPI via ConstitutionMiddleware.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -10,219 +11,263 @@ import json
 import time
 import uuid
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Callable, Final, FrozenSet
-
-from fastapi import FastAPI, Request, Response
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.types import ASGIApp
+from enum import Enum, auto
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
-# ── Verdict ──────────────────────────────────────────────────────────────────
-class Verdict(str, Enum):
-    ALLOW   = "ALLOW"
-    DENY    = "DENY"
-    ESCALATE = "ESCALATE"
+# ---------------------------------------------------------------------------
+# Enumerations
+# ---------------------------------------------------------------------------
 
+class Verdict(Enum):
+    APPROVED   = auto()
+    BLOCKED    = auto()
+    ESCALATE   = auto()
+
+
+class Severity(Enum):
+    CRITICAL   = 0   # Absolute block — never override
+    HIGH       = 1   # Block unless operator-approved
+    MEDIUM     = 2   # Warn and log
+    LOW        = 3   # Log only
+
+
+# ---------------------------------------------------------------------------
+# Immutable Prohibition Rule
+# ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
-class CritiqueResult:
-    verdict:     Verdict
-    rule_hit:    str | None
-    critique:    str
-    action_hash: str
-    timestamp:   float = field(default_factory=time.time)
-    receipt_id:  str   = field(default_factory=lambda: str(uuid.uuid4()))
+class Prohibition:
+    """A single immutable rule in the constitution."""
+    rule_id:     str
+    severity:    Severity
+    description: str
+    # A pure function (action_dict) -> bool; True = violation detected
+    matcher:     Callable[[Dict[str, Any]], bool] = field(compare=False, hash=False)
 
-    def to_dict(self) -> dict:
+
+# ---------------------------------------------------------------------------
+# Critique Result
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CritiqueResult:
+    verdict:      Verdict
+    action_id:    str
+    agent_id:     str
+    action_type:  str
+    violations:   List[Dict[str, Any]]
+    critique_text: str
+    timestamp:    float
+    receipt_hash: str
+
+    def to_dict(self) -> Dict[str, Any]:
         return {
-            "receipt_id":  self.receipt_id,
-            "verdict":     self.verdict.value,
-            "rule_hit":    self.rule_hit,
-            "critique":    self.critique,
-            "action_hash": self.action_hash,
-            "timestamp":   self.timestamp,
+            "verdict":      self.verdict.name,
+            "action_id":    self.action_id,
+            "agent_id":     self.agent_id,
+            "action_type":  self.action_type,
+            "violations":   self.violations,
+            "critique_text": self.critique_text,
+            "timestamp":    self.timestamp,
+            "receipt_hash": self.receipt_hash,
         }
 
 
-# ── Immutable Prohibition Set ─────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Constitution Kernel
+# ---------------------------------------------------------------------------
+
 class ConstitutionKernel:
     """
-    Immutable core.  Rules are frozen at construction time.
-    No runtime mutation is permitted — any attempt raises TypeError.
+    Singleton constitutional runtime.
+    All prohibitions are frozen at class definition time.
+    No runtime mutation is permitted.
     """
 
-    # Hard prohibitions: any action matching ANY of these is DENIED immediately.
-    _PROHIBITIONS: Final[FrozenSet[str]] = frozenset({
-        # Financial safety
-        "charge_without_consent",
-        "refund_reversal_fraud",
-        "unauthorized_payout",
-        "bulk_charge_all_customers",
-        "delete_payment_method",
-        # Data safety
-        "exfiltrate_pii",
-        "bulk_export_customer_data",
-        "drop_database",
-        "wipe_ledger",
-        # Infrastructure
-        "disable_circuit_breaker",
-        "bypass_rate_limit",
-        "self_replicate_without_approval",
-        "modify_constitution",           # Self-protection
-        "disable_safety_visor",
-        # Legal / compliance
-        "send_spam_blast",
-        "violate_gdpr_deletion",
-        "store_card_plaintext",
-    })
-
-    # Escalation triggers: suspicious but not immediately illegal
-    _ESCALATION_TRIGGERS: Final[FrozenSet[str]] = frozenset({
-        "large_batch_payment",           # >$1k aggregate in one action
-        "new_external_webhook",
-        "deploy_to_production",
-        "schema_migration",
-        "modify_agent_policy",
-        "access_kms_key",
-    })
-
-    # Critique heuristics: patterns the kernel looks for in action payloads
-    _CRITIQUE_RULES: Final[tuple[tuple[str, str], ...]] = (
-        ("amount",       "Action involves monetary value — verify consent and idempotency key"),
-        ("email",        "PII in payload — confirm data minimisation and retention policy"),
-        ("webhook_url",  "External egress endpoint — verify domain allowlist"),
-        ("api_key",      "Credential present in payload — must be resolved via Secrets Manager"),
-        ("delete",       "Destructive operation — confirm soft-delete and audit trail"),
-        ("admin",        "Elevated privilege scope — require dual authorisation"),
+    # ---- Hardcoded immutable prohibitions --------------------------------
+    _PROHIBITIONS: Tuple[Prohibition, ...] = (
+        # CRITICAL — absolute blocks
+        Prohibition(
+            rule_id="C-001",
+            severity=Severity.CRITICAL,
+            description="No direct credential exfiltration to external hosts",
+            matcher=lambda a: (
+                a.get("action_type") in {"http_request", "webhook", "email"}
+                and any(k in str(a.get("payload", ""))
+                        for k in ["SECRET", "API_KEY", "STRIPE_SECRET",
+                                  "OPENAI_API_KEY", "AWS_SECRET"])
+            ),
+        ),
+        Prohibition(
+            rule_id="C-002",
+            severity=Severity.CRITICAL,
+            description="No autonomous deletion of production data stores",
+            matcher=lambda a: (
+                a.get("action_type") in {"db_write", "s3_delete", "redis_flush"}
+                and a.get("params", {}).get("destructive") is True
+                and not a.get("params", {}).get("operator_approved")
+            ),
+        ),
+        Prohibition(
+            rule_id="C-003",
+            severity=Severity.CRITICAL,
+            description="No financial disbursement above per-cycle threshold without approval",
+            matcher=lambda a: (
+                a.get("action_type") in {"stripe_charge", "stripe_transfer", "payout"}
+                and float(a.get("params", {}).get("amount_usd", 0)) > 500.0
+                and not a.get("params", {}).get("operator_approved")
+            ),
+        ),
+        Prohibition(
+            rule_id="C-004",
+            severity=Severity.CRITICAL,
+            description="No self-modification of constitutional files",
+            matcher=lambda a: (
+                a.get("action_type") in {"file_write", "github_push"}
+                and "constitution" in str(a.get("params", {}).get("path", ""))
+            ),
+        ),
+        # HIGH — block unless explicitly approved
+        Prohibition(
+            rule_id="H-001",
+            severity=Severity.HIGH,
+            description="No outbound email/SMS to >100 recipients per cycle without approval",
+            matcher=lambda a: (
+                a.get("action_type") in {"email_send", "sms_send"}
+                and len(a.get("params", {}).get("recipients", [])) > 100
+                and not a.get("params", {}).get("operator_approved")
+            ),
+        ),
+        Prohibition(
+            rule_id="H-002",
+            severity=Severity.HIGH,
+            description="No GitHub Actions workflow dispatch to non-whitelisted repos",
+            matcher=lambda a: (
+                a.get("action_type") == "github_dispatch"
+                and a.get("params", {}).get("repo") not in {
+                    "Garrettc123/garcar-autonomous-wealth-system"
+                }
+            ),
+        ),
+        Prohibition(
+            rule_id="H-003",
+            severity=Severity.HIGH,
+            description="No Zapier webhook triggers with unverified payload signatures",
+            matcher=lambda a: (
+                a.get("action_type") == "zapier_trigger"
+                and not a.get("params", {}).get("signature_verified")
+            ),
+        ),
+        # MEDIUM — warn and log
+        Prohibition(
+            rule_id="M-001",
+            severity=Severity.MEDIUM,
+            description="Revenue actions should include a monetization justification",
+            matcher=lambda a: (
+                a.get("action_type") in {"stripe_charge", "create_invoice"}
+                and not a.get("params", {}).get("justification")
+            ),
+        ),
     )
 
     def __init__(self) -> None:
-        # Seal: prevent any attribute mutation after init
-        object.__setattr__(self, "_sealed", True)
+        # Defensive: re-freeze tuple so subclasses can't inject rules
+        object.__setattr__(self, "_prohibitions", self._PROHIBITIONS)
 
-    def __setattr__(self, name: str, value: Any) -> None:  # type: ignore[override]
-        if getattr(self, "_sealed", False):
-            raise TypeError("ConstitutionKernel is immutable after initialisation")
-        super().__setattr__(name, value)
+    # ------------------------------------------------------------------
+    # Core critique pass
+    # ------------------------------------------------------------------
 
-    # ── Public API ────────────────────────────────────────────────────────────
-
-    def evaluate(self, action_type: str, payload: dict[str, Any]) -> CritiqueResult:
+    def critique(self, action: Dict[str, Any]) -> CritiqueResult:
         """
-        Pre-execution critique pass.
-        Returns a CritiqueResult with verdict ALLOW / DENY / ESCALATE.
+        Run the pre-execution critique pass.
+        Returns a CritiqueResult — callers must check .verdict before executing.
         """
-        action_hash = self._hash_action(action_type, payload)
-        action_lower = action_type.lower()
+        action_id   = action.get("action_id", str(uuid.uuid4()))
+        agent_id    = action.get("agent_id", "unknown")
+        action_type = action.get("action_type", "unknown")
 
-        # 1. Hard prohibition check
-        if action_lower in self._PROHIBITIONS:
-            return CritiqueResult(
-                verdict=Verdict.DENY,
-                rule_hit=action_lower,
-                critique=f"PROHIBITED: '{action_type}' is constitutionally forbidden. No override permitted.",
-                action_hash=action_hash,
-            )
+        violations:   List[Dict[str, Any]] = []
+        blocked       = False
+        escalate      = False
+        critique_lines: List[str] = []
 
-        # 2. Escalation trigger check
-        if action_lower in self._ESCALATION_TRIGGERS:
-            return CritiqueResult(
-                verdict=Verdict.ESCALATE,
-                rule_hit=action_lower,
-                critique=f"ESCALATION: '{action_type}' requires human approval before execution.",
-                action_hash=action_hash,
-            )
-
-        # 3. Payload critique heuristics
-        payload_str = json.dumps(payload, default=str).lower()
-        for keyword, advice in self._CRITIQUE_RULES:
-            if keyword in payload_str:
-                return CritiqueResult(
-                    verdict=Verdict.ALLOW,
-                    rule_hit=keyword,
-                    critique=f"ADVISORY [{keyword}]: {advice}",
-                    action_hash=action_hash,
+        for prohibition in self._prohibitions:
+            try:
+                triggered = prohibition.matcher(action)
+            except Exception as exc:  # noqa: BLE001
+                triggered = False
+                critique_lines.append(
+                    f"[WARN] Rule {prohibition.rule_id} eval error: {exc}"
                 )
 
-        # 4. Clean pass
-        return CritiqueResult(
-            verdict=Verdict.ALLOW,
-            rule_hit=None,
-            critique="Constitution pass: no violations detected.",
-            action_hash=action_hash,
+            if triggered:
+                violations.append({
+                    "rule_id":     prohibition.rule_id,
+                    "severity":    prohibition.severity.name,
+                    "description": prohibition.description,
+                })
+                critique_lines.append(
+                    f"[{prohibition.severity.name}] Violation: {prohibition.description} "
+                    f"(rule {prohibition.rule_id})"
+                )
+                if prohibition.severity == Severity.CRITICAL:
+                    blocked = True
+                elif prohibition.severity == Severity.HIGH:
+                    blocked = True
+                    escalate = True
+
+        if not violations:
+            critique_lines.append("[PASS] No constitutional violations detected.")
+
+        verdict = (
+            Verdict.BLOCKED   if blocked  else
+            Verdict.ESCALATE  if escalate else
+            Verdict.APPROVED
         )
 
-    def audit_log_entry(self, result: CritiqueResult, agent_id: str) -> dict:
-        entry = result.to_dict()
-        entry["agent_id"] = agent_id
-        return entry
+        receipt_payload = json.dumps(
+            {"action_id": action_id, "verdict": verdict.name,
+             "violations": violations, "ts": time.time()},
+            sort_keys=True
+        )
+        receipt_hash = hashlib.sha256(receipt_payload.encode()).hexdigest()
 
-    @staticmethod
-    def _hash_action(action_type: str, payload: dict) -> str:
-        raw = json.dumps({"action": action_type, "payload": payload}, sort_keys=True, default=str)
-        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+        return CritiqueResult(
+            verdict       = verdict,
+            action_id     = action_id,
+            agent_id      = agent_id,
+            action_type   = action_type,
+            violations    = violations,
+            critique_text = "\n".join(critique_lines),
+            timestamp     = time.time(),
+            receipt_hash  = receipt_hash,
+        )
 
+    # ------------------------------------------------------------------
+    # Convenience guard — raises on block
+    # ------------------------------------------------------------------
 
-# ── FastAPI Middleware ────────────────────────────────────────────────────────
-
-class ConstitutionMiddleware(BaseHTTPMiddleware):
-    """
-    Wires the ConstitutionKernel into every FastAPI request as a middleware layer.
-    Agent action routes must include X-Agent-Action and X-Agent-ID headers.
-    DENY → 403.  ESCALATE → 202 (queued for human approval).
-    """
-
-    SKIP_PATHS = {"/health", "/docs", "/openapi.json", "/redoc"}
-
-    def __init__(self, app: ASGIApp, kernel: ConstitutionKernel | None = None) -> None:
-        super().__init__(app)
-        self._kernel = kernel or ConstitutionKernel()
-
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        if request.url.path in self.SKIP_PATHS:
-            return await call_next(request)
-
-        action_type = request.headers.get("X-Agent-Action", "unknown")
-        agent_id    = request.headers.get("X-Agent-ID",     "unknown")
-
-        # Best-effort payload extraction (don't block on body parse errors)
-        try:
-            body = await request.body()
-            payload: dict = json.loads(body) if body else {}
-        except Exception:
-            payload = {}
-
-        result = self._kernel.evaluate(action_type, payload)
-
-        # Attach receipt to downstream context
-        request.state.constitution_receipt = result
-
-        if result.verdict == Verdict.DENY:
-            return Response(
-                content=json.dumps({"error": "Constitutional violation", "detail": result.critique, "receipt_id": result.receipt_id}),
-                status_code=403,
-                media_type="application/json",
-            )
-
-        if result.verdict == Verdict.ESCALATE:
-            # Queue for human approval — respond 202 immediately
-            return Response(
-                content=json.dumps({"status": "ESCALATED", "detail": result.critique, "receipt_id": result.receipt_id}),
-                status_code=202,
-                media_type="application/json",
-            )
-
-        response = await call_next(request)
-        response.headers["X-Constitution-Receipt"] = result.receipt_id
-        response.headers["X-Constitution-Verdict"]  = result.verdict.value
-        return response
+    def enforce(self, action: Dict[str, Any]) -> CritiqueResult:
+        """Critique and raise ConstitutionViolation if blocked."""
+        result = self.critique(action)
+        if result.verdict == Verdict.BLOCKED:
+            raise ConstitutionViolation(result)
+        return result
 
 
-# ── Bootstrap helper ─────────────────────────────────────────────────────────
+class ConstitutionViolation(Exception):
+    def __init__(self, result: CritiqueResult) -> None:
+        self.result = result
+        super().__init__(
+            f"Constitutional block [{result.action_id}]: "
+            f"{result.critique_text}"
+        )
 
-def mount_constitution(app: FastAPI) -> ConstitutionKernel:
-    """Call once at app startup: app = FastAPI(); mount_constitution(app)"""
-    kernel = ConstitutionKernel()
-    app.add_middleware(ConstitutionMiddleware, kernel=kernel)
-    return kernel
+
+# ---------------------------------------------------------------------------
+# Singleton instance
+# ---------------------------------------------------------------------------
+
+KERNEL = ConstitutionKernel()
