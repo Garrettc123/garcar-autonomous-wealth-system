@@ -1,0 +1,127 @@
+name: 🚀 Deploy Garcar Revenue Engine
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'revenue_engine/**'
+      - '.github/workflows/deploy-revenue-engine.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deploy environment'
+        required: true
+        default: 'production'
+        type: choice
+        options: [production, staging]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: garcar-revenue-engine
+  ECS_CLUSTER: garcar-revenue-cluster
+  ECS_SERVICE: garcar-revenue-service
+  CONTAINER_NAME: revenue-engine
+
+jobs:
+
+  # ── 1. Security scan before anything ships ──────────────────────────────────
+  security_scan:
+    name: 🔒 Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan for secrets
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./revenue_engine
+          base: HEAD~1
+          head: HEAD
+
+  # ── 2. Build & push Docker image to ECR ────────────────────────────────────
+  build_and_push:
+    name: 🐳 Build & Push to ECR
+    runs-on: ubuntu-latest
+    needs: security_scan
+    outputs:
+      image: ${{ steps.build-image.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./revenue_engine
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+  # ── 3. Deploy to ECS Fargate ───────────────────────────────────────────────
+  deploy_ecs:
+    name: ⚡ Deploy to ECS Fargate
+    runs-on: ubuntu-latest
+    needs: build_and_push
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Download ECS task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition garcar-revenue-engine \
+            --query taskDefinition > task-definition.json
+
+      - name: Update ECS task definition with new image
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ needs.build_and_push.outputs.image }}
+
+      - name: Deploy to ECS Service
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition:  ${{ steps.task-def.outputs.task-definition }}
+          service:          ${{ env.ECS_SERVICE }}
+          cluster:          ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+      - name: 🎉 Deployment complete
+        run: |
+          echo "Revenue Engine deployed at $(date)"
+          echo "Image: ${{ needs.build_and_push.outputs.image }}"
+
+  # ── 4. Smoke test — hit health endpoint ───────────────────────────────────
+  smoke_test:
+    name: 🔬 Smoke Test
+    runs-on: ubuntu-latest
+    needs: deploy_ecs
+    steps:
+      - name: Health check
+        run: |
+          sleep 15
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" ${{ secrets.WEBHOOK_URL }}/health)
+          if [ "$STATUS" != "200" ]; then
+            echo "❌ Health check failed with status $STATUS"
+            exit 1
+          fi
+          echo "✅ Revenue Engine online — status $STATUS"
