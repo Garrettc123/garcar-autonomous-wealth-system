@@ -1,0 +1,219 @@
+name: 🧠 GARCAR Dependency Orchestrator v2
+
+on:
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: 'all | secrets | deploy | revenue | orchestrate'
+        default: 'all'
+        required: false
+  workflow_call:
+    inputs:
+      phase:
+        type: string
+        default: 'all'
+        required: false
+
+concurrency:
+  group: garcar-dep-orchestrator
+  cancel-in-progress: false
+
+jobs:
+  # ── PHASE 1: SECRETS & AUTH ─────────────────────────────────────────────
+  phase-secrets:
+    name: 🔑 Phase 1 — Secrets & Auth
+    runs-on: ubuntu-latest
+    if: inputs.phase == 'all' || inputs.phase == 'secrets'
+    timeout-minutes: 15
+    outputs:
+      status: ${{ steps.check.outputs.status }}
+    steps:
+      - name: Auth GH CLI
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+
+      - name: Fire secrets workflows in parallel
+        run: |
+          gh workflow run garcar-zero-key.yml &
+          gh workflow run secrets-bootstrap.yml &
+          gh workflow run auto-provision-secrets.yml &
+          wait
+          echo "Secrets batch dispatched"
+
+      - name: Poll — wait for secrets runs to complete
+        id: check
+        run: |
+          echo "Waiting 30s for secrets workflows to register..."
+          sleep 30
+
+          MAX_WAIT=600  # 10 minutes
+          ELAPSED=0
+          INTERVAL=20
+
+          WORKFLOWS=("garcar-zero-key.yml" "secrets-bootstrap.yml" "auto-provision-secrets.yml")
+          ALL_DONE=false
+
+          while [ $ELAPSED -lt $MAX_WAIT ]; do
+            ALL_DONE=true
+            for wf in "${WORKFLOWS[@]}"; do
+              STATUS=$(gh run list --workflow="$wf" --limit=1 --json status --jq '.[0].status' 2>/dev/null || echo "unknown")
+              if [ "$STATUS" != "completed" ] && [ "$STATUS" != "success" ]; then
+                ALL_DONE=false
+                echo "  ⏳ $wf → $STATUS"
+              else
+                echo "  ✅ $wf → $STATUS"
+              fi
+            done
+
+            if [ "$ALL_DONE" = "true" ]; then
+              echo "All secrets workflows complete."
+              break
+            fi
+
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+          done
+
+          if [ "$ALL_DONE" = "true" ]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+          else
+            echo "status=timeout" >> $GITHUB_OUTPUT
+            echo "⚠️ Secrets phase timed out — proceeding anyway"
+          fi
+
+  # ── PHASE 2: DEPLOY (depends on secrets) ──────────────────────────────────
+  phase-deploy:
+    name: 🏗️ Phase 2 — Deploy
+    runs-on: ubuntu-latest
+    needs: [phase-secrets]
+    if: |
+      always() &&
+      (inputs.phase == 'all' || inputs.phase == 'deploy') &&
+      (needs.phase-secrets.result == 'success' || needs.phase-secrets.result == 'skipped')
+    timeout-minutes: 20
+    outputs:
+      status: ${{ steps.check.outputs.status }}
+    steps:
+      - name: Auth GH CLI
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+
+      - name: Fire deploy workflows
+        run: |
+          gh workflow run deploy.yml &
+          gh workflow run ses-recheck.yml &
+          gh workflow run bootstrap-aws-keys.yml &
+          wait
+          echo "Deploy batch dispatched"
+
+      - name: Poll — wait for deploy runs
+        id: check
+        run: |
+          sleep 30
+          MAX_WAIT=900
+          ELAPSED=0
+          INTERVAL=30
+          WORKFLOWS=("deploy.yml" "ses-recheck.yml")
+
+          while [ $ELAPSED -lt $MAX_WAIT ]; do
+            ALL_DONE=true
+            for wf in "${WORKFLOWS[@]}"; do
+              STATUS=$(gh run list --workflow="$wf" --limit=1 --json status --jq '.[0].status' 2>/dev/null || echo "unknown")
+              if [ "$STATUS" != "completed" ]; then
+                ALL_DONE=false
+                echo "  ⏳ $wf → $STATUS"
+              else
+                echo "  ✅ $wf → $STATUS"
+              fi
+            done
+            [ "$ALL_DONE" = "true" ] && break
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+          done
+
+          echo "status=$([ "$ALL_DONE" = 'true' ] && echo success || echo timeout)" >> $GITHUB_OUTPUT
+
+  # ── PHASE 3: REVENUE (depends on deploy) ─────────────────────────────────
+  phase-revenue:
+    name: 💰 Phase 3 — Revenue Engine
+    runs-on: ubuntu-latest
+    needs: [phase-deploy]
+    if: |
+      always() &&
+      (inputs.phase == 'all' || inputs.phase == 'revenue') &&
+      (needs.phase-deploy.result == 'success' || needs.phase-deploy.result == 'skipped')
+    timeout-minutes: 30
+    outputs:
+      status: ${{ steps.check.outputs.status }}
+    steps:
+      - name: Auth GH CLI
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+
+      - name: Fire revenue workflows
+        run: |
+          gh workflow run master-revenue-trigger.yml &
+          gh workflow run revenue-bootstrap.yml &
+          gh workflow run customer-acquisition-loop.yml &
+          gh workflow run alw-allocator.yml &
+          wait
+          echo "Revenue batch dispatched"
+
+      - name: Poll — wait for revenue runs
+        id: check
+        run: |
+          sleep 45
+          MAX_WAIT=1200
+          ELAPSED=0
+          INTERVAL=30
+          WORKFLOWS=("master-revenue-trigger.yml" "revenue-bootstrap.yml" "customer-acquisition-loop.yml")
+
+          while [ $ELAPSED -lt $MAX_WAIT ]; do
+            ALL_DONE=true
+            for wf in "${WORKFLOWS[@]}"; do
+              STATUS=$(gh run list --workflow="$wf" --limit=1 --json status --jq '.[0].status' 2>/dev/null || echo "unknown")
+              if [ "$STATUS" != "completed" ]; then
+                ALL_DONE=false
+                echo "  ⏳ $wf → $STATUS"
+              else
+                echo "  ✅ $wf → $STATUS"
+              fi
+            done
+            [ "$ALL_DONE" = "true" ] && break
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+          done
+
+          echo "status=$([ "$ALL_DONE" = 'true' ] && echo success || echo timeout)" >> $GITHUB_OUTPUT
+
+  # ── PHASE 4: ORCHESTRATE (depends on revenue) ────────────────────────────
+  phase-orchestrate:
+    name: 🎯 Phase 4 — Final Orchestration
+    runs-on: ubuntu-latest
+    needs: [phase-revenue]
+    if: |
+      always() &&
+      (inputs.phase == 'all' || inputs.phase == 'orchestrate') &&
+      (needs.phase-revenue.result == 'success' || needs.phase-revenue.result == 'skipped')
+    timeout-minutes: 15
+    steps:
+      - name: Auth GH CLI
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+
+      - name: Fire orchestration workflows
+        run: |
+          gh workflow run master-orchestrator.yml &
+          gh workflow run phone-trigger.yml &
+          gh workflow run auto-merge-copilot.yml &
+          gh workflow run auto-rotate-keys.yml &
+          wait
+          echo "Orchestration batch dispatched"
+
+      - name: Final pipeline summary
+        run: |
+          echo "══════════════════════════════════════════════"
+          echo "  🤖 GARCAR DEPENDENCY ORCHESTRATOR COMPLETE"
+          echo "══════════════════════════════════════════════"
+          echo "  Phase 1 (Secrets):     ${{ needs.phase-secrets.outputs.status || 'skipped' }}"
+          echo "  Phase 2 (Deploy):      ${{ needs.phase-deploy.outputs.status || 'skipped' }}"
+          echo "  Phase 3 (Revenue):     ${{ needs.phase-revenue.outputs.status || 'skipped' }}"
+          echo "  Phase 4 (Orchestrate): DISPATCHED"
+          echo "══════════════════════════════════════════════"
+          gh run list --limit 15

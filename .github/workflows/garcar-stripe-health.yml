@@ -1,0 +1,137 @@
+name: 💳 GARCAR Stripe Health Monitor
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # Every 6 hours
+  workflow_dispatch:
+
+concurrency:
+  group: garcar-stripe-health
+  cancel-in-progress: true
+
+jobs:
+  stripe-health:
+    name: 💳 Check Stripe API Connectivity
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      stripe_ok: ${{ steps.ping.outputs.stripe_ok }}
+      balance: ${{ steps.ping.outputs.balance }}
+
+    steps:
+      - name: Ping Stripe API
+        id: ping
+        run: |
+          if [ -z "${{ secrets.STRIPE_SECRET_KEY }}" ]; then
+            echo "⚠️  STRIPE_SECRET_KEY secret not set — skipping health check"
+            echo "stripe_ok=no_key" >> $GITHUB_OUTPUT
+            echo "balance=unknown" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          HTTP_STATUS=$(curl -s -o /tmp/stripe_resp.json -w "%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.STRIPE_SECRET_KEY }}" \
+            https://api.stripe.com/v1/balance)
+
+          cat /tmp/stripe_resp.json
+
+          if [ "$HTTP_STATUS" = "200" ]; then
+            AVAILABLE=$(cat /tmp/stripe_resp.json | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+avail=d.get('available',[])
+if avail:
+    amt=avail[0].get('amount',0)
+    cur=avail[0].get('currency','usd').upper()
+    print(f'{amt/100:.2f} {cur}')
+else:
+    print('0.00 USD')
+" 2>/dev/null || echo 'parse_error')
+            echo "✅ Stripe API healthy — Balance: $AVAILABLE"
+            echo "stripe_ok=true" >> $GITHUB_OUTPUT
+            echo "balance=$AVAILABLE" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Stripe API returned HTTP $HTTP_STATUS"
+            echo "stripe_ok=false" >> $GITHUB_OUTPUT
+            echo "balance=error_$HTTP_STATUS" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Log to health issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const ok = `${{ steps.ping.outputs.stripe_ok }}`;
+            const balance = `${{ steps.ping.outputs.balance }}`;
+            const now = new Date().toISOString();
+            const icon = ok === 'true' ? '✅' : (ok === 'no_key' ? '⚪' : '❌');
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'stripe-health'
+            });
+
+            const entry = `${icon} **${now}** — Stripe: \`${ok}\` | Balance: \`${balance}\` | [Run](${runUrl})`;
+
+            if (issues.data.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issues.data[0].number,
+                body: entry
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: '💳 GARCAR Stripe Health Log',
+                body: `# Stripe API Health — Continuous Monitor\n\nEvery 6-hour check logged below.\n\n---\n\n${entry}`,
+                labels: ['stripe-health', 'health-log', 'auto-generated']
+              });
+            }
+
+  alert-stripe-down:
+    name: 🚨 Alert — Stripe Unreachable
+    runs-on: ubuntu-latest
+    needs: [stripe-health]
+    if: needs.stripe-health.outputs.stripe_ok == 'false'
+    steps:
+      - name: Create Stripe-down incident
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const now = new Date().toISOString();
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'stripe-down'
+            });
+
+            if (issues.data.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `🚨 Stripe API Unreachable — ${now}`,
+                body: [
+                  `## 🚨 Stripe API Down`,
+                  ``,
+                  `Detected at: ${now}`,
+                  `Run: [View](${runUrl})`,
+                  ``,
+                  `## Actions`,
+                  `- [ ] Check Stripe status at https://status.stripe.com`,
+                  `- [ ] Verify STRIPE_SECRET_KEY secret is valid`,
+                  `- [ ] Check for API version deprecation`,
+                  `- [ ] Close this issue when Stripe is reachable again`,
+                  ``,
+                  `---`,
+                  `*GARCAR Stripe Health Monitor — auto-generated*`
+                ].join('\n'),
+                labels: ['stripe-down', 'incident', 'auto-generated']
+              });
+            }

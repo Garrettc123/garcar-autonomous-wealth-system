@@ -1,0 +1,204 @@
+name: 🐕 GARCAR Watchdog v2 — Stall Detection & Auto-Retry
+
+on:
+  schedule:
+    - cron: '30 */1 * * *'   # Every hour at :30
+  workflow_dispatch:
+    inputs:
+      stall_threshold_minutes:
+        description: 'Minutes before a run is considered stalled'
+        default: '60'
+        required: false
+
+concurrency:
+  group: garcar-watchdog-v2
+  cancel-in-progress: true
+
+jobs:
+  watchdog:
+    name: 🔍 Scan for Stalled / Failed Runs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      stalled: ${{ steps.scan.outputs.stalled }}
+      failed_critical: ${{ steps.scan.outputs.failed_critical }}
+
+    steps:
+      - name: Auth GH CLI
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+
+      - name: Scan all workflow run statuses
+        id: scan
+        run: |
+          THRESHOLD_MINUTES=${{ inputs.stall_threshold_minutes || 60 }}
+          NOW=$(date +%s)
+          STALLED=""
+          FAILED_CRITICAL=""
+
+          # Critical workflows that MUST succeed
+          CRITICAL_WORKFLOWS=(
+            "garcar-hands-free-master.yml"
+            "master-revenue-trigger.yml"
+            "deploy.yml"
+            "secrets-bootstrap.yml"
+          )
+
+          # All workflows
+          ALL_WORKFLOWS=(
+            "garcar-zero-key.yml"
+            "secrets-bootstrap.yml"
+            "auto-provision-secrets.yml"
+            "auto-rotate-keys.yml"
+            "bootstrap-aws-keys.yml"
+            "zero-touch-secrets.yml"
+            "secrets-audit.yml"
+            "deploy.yml"
+            "ses-recheck.yml"
+            "master-revenue-trigger.yml"
+            "revenue-bootstrap.yml"
+            "customer-acquisition-loop.yml"
+            "alw-allocator.yml"
+            "master-orchestrator.yml"
+            "phone-trigger.yml"
+            "auto-merge-copilot.yml"
+            "garcar-hands-free-master.yml"
+          )
+
+          echo "── Scanning $(echo ${#ALL_WORKFLOWS[@]}) workflows ──"
+
+          for wf in "${ALL_WORKFLOWS[@]}"; do
+            RUN_DATA=$(gh run list --workflow="$wf" --limit=1 --json status,conclusion,createdAt,databaseId 2>/dev/null || echo "[]")
+
+            if [ "$RUN_DATA" = "[]" ] || [ -z "$RUN_DATA" ]; then
+              echo "  ⚪ $wf — no runs found"
+              continue
+            fi
+
+            STATUS=$(echo "$RUN_DATA" | jq -r '.[0].status // "unknown"')
+            CONCLUSION=$(echo "$RUN_DATA" | jq -r '.[0].conclusion // "none"')
+            CREATED_AT=$(echo "$RUN_DATA" | jq -r '.[0].createdAt // ""')
+            RUN_ID=$(echo "$RUN_DATA" | jq -r '.[0].databaseId // "0"')
+
+            # Check for stalled (in_progress for too long)
+            if [ "$STATUS" = "in_progress" ] && [ -n "$CREATED_AT" ]; then
+              CREATED_EPOCH=$(date -d "$CREATED_AT" +%s 2>/dev/null || echo 0)
+              ELAPSED_MIN=$(( (NOW - CREATED_EPOCH) / 60 ))
+
+              if [ $ELAPSED_MIN -gt $THRESHOLD_MINUTES ]; then
+                echo "  🟡 STALLED: $wf (running ${ELAPSED_MIN}m, threshold ${THRESHOLD_MINUTES}m)"
+                STALLED="$STALLED $wf"
+              else
+                echo "  🔵 Running: $wf (${ELAPSED_MIN}m elapsed)"
+              fi
+
+            # Check for failures on critical workflows
+            elif [ "$STATUS" = "completed" ] && [ "$CONCLUSION" = "failure" ]; then
+              IS_CRITICAL=false
+              for c in "${CRITICAL_WORKFLOWS[@]}"; do
+                [ "$c" = "$wf" ] && IS_CRITICAL=true && break
+              done
+
+              if [ "$IS_CRITICAL" = "true" ]; then
+                echo "  🔴 CRITICAL FAILURE: $wf"
+                FAILED_CRITICAL="$FAILED_CRITICAL $wf"
+              else
+                echo "  🟠 Failed (non-critical): $wf"
+              fi
+            else
+              echo "  ✅ OK: $wf ($STATUS/$CONCLUSION)"
+            fi
+          done
+
+          echo "stalled=$STALLED" >> $GITHUB_OUTPUT
+          echo "failed_critical=$FAILED_CRITICAL" >> $GITHUB_OUTPUT
+
+          echo "── Scan complete ──"
+          echo "  Stalled:          $STALLED"
+          echo "  Critical Failures: $FAILED_CRITICAL"
+
+  auto-retry-stalled:
+    name: 🔄 Auto-Retry Stalled Workflows
+    runs-on: ubuntu-latest
+    needs: [watchdog]
+    if: needs.watchdog.outputs.stalled != ''
+    steps:
+      - name: Auth GH CLI
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+
+      - name: Cancel and re-trigger stalled runs
+        run: |
+          STALLED="${{ needs.watchdog.outputs.stalled }}"
+          echo "Re-triggering stalled workflows: $STALLED"
+
+          for wf in $STALLED; do
+            echo "  🔄 Re-triggering: $wf"
+            # Cancel the stalled run
+            RUN_ID=$(gh run list --workflow="$wf" --limit=1 --json databaseId --jq '.[0].databaseId' 2>/dev/null)
+            if [ -n "$RUN_ID" ] && [ "$RUN_ID" != "null" ]; then
+              gh run cancel "$RUN_ID" 2>/dev/null && echo "    Cancelled run $RUN_ID" || echo "    Could not cancel (may have completed)"
+              sleep 3
+            fi
+            # Re-dispatch
+            gh workflow run "$wf" && echo "    ✅ Re-dispatched" || echo "    ❌ Re-dispatch failed"
+            sleep 5
+          done
+
+  alert-critical-failures:
+    name: 🚨 Alert on Critical Failures
+    runs-on: ubuntu-latest
+    needs: [watchdog]
+    if: needs.watchdog.outputs.failed_critical != ''
+    steps:
+      - name: Create or update critical failure issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const critical = `${{ needs.watchdog.outputs.failed_critical }}`;
+            const stalled = `${{ needs.watchdog.outputs.stalled }}`;
+            const now = new Date().toISOString();
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            // Look for existing watchdog issue
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'watchdog-alert'
+            });
+
+            const body = [
+              `## 🐕 Watchdog v2 Alert — ${now}`,
+              ``,
+              `| Field | Value |`,
+              `|-------|-------|`,
+              `| **Critical Failures** | \`${critical.trim()}\` |`,
+              `| **Stalled Workflows** | \`${stalled.trim() || 'none'}\` |`,
+              `| **Watchdog Run** | [View](${runUrl}) |`,
+              ``,
+              `## Critical Failed Workflows`,
+              critical.trim().split(' ').filter(Boolean).map(s => `- [ ] \`${s}\``).join('\n'),
+              ``,
+              `## Auto-Actions Taken`,
+              `- Stalled workflows were automatically cancelled and re-triggered`,
+              `- This issue was auto-created for human review`,
+              ``,
+              `---`,
+              `*GARCAR Watchdog v2 — auto-generated*`
+            ].join('\n');
+
+            if (issues.data.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issues.data[0].number,
+                body: `## 🔄 Re-occurrence — ${now}\n\nCritical failures: \`${critical}\`\n\n[Watchdog Run](${runUrl})`
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `🐕 Watchdog Alert — Critical Pipeline Failures`,
+                body,
+                labels: ['watchdog-alert', 'incident', 'auto-generated']
+              });
+            }
