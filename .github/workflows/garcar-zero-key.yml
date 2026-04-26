@@ -1,0 +1,93 @@
+# =============================================================================
+# GARCAR ZERO-KEY MASTER WORKFLOW
+# Single workflow that handles ALL secret provisioning, OIDC setup,
+# SSM sync, and self-healing. Replaces bootstrap-aws-keys, zero-touch-secrets,
+# auto-provision-secrets, secrets-bootstrap, and auto-rotate-keys.
+#
+# Triggers:
+#   - Every push to main
+#   - Every 6 hours (self-healing cron)
+#   - Manual dispatch (with optional --set KEY=value)
+# =============================================================================
+
+name: 🔑 Garcar Zero-Key Master
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 */6 * * *'   # Every 6 hours — self-heal
+  workflow_dispatch:
+    inputs:
+      set_key:
+        description: 'Set a key (format: KEY=value). Leave blank to just re-sync.'
+        required: false
+        default: ''
+
+permissions:
+  id-token: write   # Required for OIDC
+  contents: read
+
+jobs:
+  zero-key-provision:
+    name: Zero-Key Provision & Self-Heal
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # -----------------------------------------------------------------------
+      # 1. Checkout
+      # -----------------------------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # 2. Authenticate to AWS via OIDC (NO static keys ever)
+      # -----------------------------------------------------------------------
+      - name: Configure AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.OIDC_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          role-session-name: garcar-zero-key-${{ github.run_id }}
+
+      # -----------------------------------------------------------------------
+      # 3. Install Python deps
+      # -----------------------------------------------------------------------
+      - name: Install Python deps
+        run: pip install --quiet boto3 requests pynacl
+
+      # -----------------------------------------------------------------------
+      # 4. (Optional) Set a new key from workflow_dispatch input
+      # -----------------------------------------------------------------------
+      - name: Set key from dispatch input
+        if: ${{ github.event.inputs.set_key != '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+        run: |
+          python secrets_provisioner.py --set "${{ github.event.inputs.set_key }}"
+
+      # -----------------------------------------------------------------------
+      # 5. Run full provisioner (load SSM → provision infra → sync to GitHub)
+      # -----------------------------------------------------------------------
+      - name: Run Zero-Touch Provisioner
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+        run: python secrets_provisioner.py
+
+      # -----------------------------------------------------------------------
+      # 6. Report result
+      # -----------------------------------------------------------------------
+      - name: Report
+        run: |
+          echo ""
+          echo "====================================="
+          echo "  Garcar Zero-Key run complete"
+          echo "  $(date -u)"
+          echo "====================================="
+          echo "All secrets synced SSM → GitHub Actions."
+          echo "OIDC role is active — no static AWS keys in use."
