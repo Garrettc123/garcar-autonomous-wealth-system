@@ -1,0 +1,475 @@
+name: 🚀 GARCAR MASS DEPLOY — ALL SYSTEMS
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type DEPLOY to confirm full system launch"
+        required: true
+        default: "DEPLOY"
+
+concurrency:
+  group: mass-deploy
+  cancel-in-progress: false
+
+jobs:
+
+  # ─── PHASE 0: SECRETS & KEYS (must go first) ───────────────────────────────
+  phase0-secrets-bootstrap:
+    name: "⚙️ [P0] Secrets Bootstrap"
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.confirm == 'DEPLOY' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger secrets-bootstrap
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'secrets-bootstrap.yml',
+              ref: 'main'
+            });
+            console.log('✅ secrets-bootstrap.yml triggered');
+
+  phase0-auto-provision-secrets:
+    name: "⚙️ [P0] Auto Provision Secrets"
+    runs-on: ubuntu-latest
+    needs: phase0-secrets-bootstrap
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger auto-provision-secrets
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'auto-provision-secrets.yml',
+              ref: 'main'
+            });
+            console.log('✅ auto-provision-secrets.yml triggered');
+
+  phase0-zero-touch-secrets:
+    name: "⚙️ [P0] Zero Touch Secrets"
+    runs-on: ubuntu-latest
+    needs: phase0-auto-provision-secrets
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger zero-touch-secrets
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'zero-touch-secrets.yml',
+              ref: 'main'
+            });
+            console.log('✅ zero-touch-secrets.yml triggered');
+
+  phase0-bootstrap-aws-keys:
+    name: "⚙️ [P0] Bootstrap AWS Keys"
+    runs-on: ubuntu-latest
+    needs: phase0-zero-touch-secrets
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger bootstrap-aws-keys
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'bootstrap-aws-keys.yml',
+              ref: 'main'
+            });
+            console.log('✅ bootstrap-aws-keys.yml triggered');
+
+  phase0-auto-rotate-keys:
+    name: "⚙️ [P0] Auto Rotate Keys"
+    runs-on: ubuntu-latest
+    needs: phase0-bootstrap-aws-keys
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger auto-rotate-keys
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'auto-rotate-keys.yml',
+              ref: 'main'
+            });
+            console.log('✅ auto-rotate-keys.yml triggered');
+
+  phase0-garcar-zero-key:
+    name: "⚙️ [P0] Garcar Zero Key"
+    runs-on: ubuntu-latest
+    needs: phase0-auto-rotate-keys
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger garcar-zero-key
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'garcar-zero-key.yml',
+              ref: 'main'
+            });
+            console.log('✅ garcar-zero-key.yml triggered');
+
+  phase0-secrets-audit:
+    name: "⚙️ [P0] Secrets Audit"
+    runs-on: ubuntu-latest
+    needs: phase0-garcar-zero-key
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger secrets-audit
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'secrets-audit.yml',
+              ref: 'main'
+            });
+            console.log('✅ secrets-audit.yml triggered');
+
+  # ─── PHASE 1: INFRASTRUCTURE & SES ────────────────────────────────────────
+  phase1-ses-recheck:
+    name: "📧 [P1] SES Recheck"
+    runs-on: ubuntu-latest
+    needs: phase0-secrets-audit
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger ses-recheck
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'ses-recheck.yml',
+              ref: 'main'
+            });
+            console.log('✅ ses-recheck.yml triggered');
+
+  # ─── PHASE 2: DEPLOY CORE ENGINES ─────────────────────────────────────────
+  phase2-deploy:
+    name: "🚀 [P2] Core Deploy"
+    runs-on: ubuntu-latest
+    needs: phase1-ses-recheck
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger deploy
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'deploy.yml',
+              ref: 'main'
+            });
+            console.log('✅ deploy.yml triggered');
+
+  phase2-deploy-revenue-engine:
+    name: "💰 [P2] Deploy Revenue Engine"
+    runs-on: ubuntu-latest
+    needs: phase2-deploy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger deploy-revenue-engine
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'deploy-revenue-engine.yml',
+              ref: 'main'
+            });
+            console.log('✅ deploy-revenue-engine.yml triggered');
+
+  phase2-revenue-bootstrap:
+    name: "💰 [P2] Revenue Bootstrap"
+    runs-on: ubuntu-latest
+    needs: phase2-deploy-revenue-engine
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger revenue-bootstrap
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'revenue-bootstrap.yml',
+              ref: 'main'
+            });
+            console.log('✅ revenue-bootstrap.yml triggered');
+
+  # ─── PHASE 3: STRIPE & FINANCIAL HEALTH ───────────────────────────────────
+  phase3-stripe-health:
+    name: "💳 [P3] Stripe Health"
+    runs-on: ubuntu-latest
+    needs: phase2-revenue-bootstrap
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger garcar-stripe-health
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'garcar-stripe-health.yml',
+              ref: 'main'
+            });
+            console.log('✅ garcar-stripe-health.yml triggered');
+
+  phase3-alw-allocator:
+    name: "💳 [P3] ALW Allocator"
+    runs-on: ubuntu-latest
+    needs: phase3-stripe-health
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger alw-allocator
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'alw-allocator.yml',
+              ref: 'main'
+            });
+            console.log('✅ alw-allocator.yml triggered');
+
+  # ─── PHASE 4: ORCHESTRATORS ────────────────────────────────────────────────
+  phase4-dependency-orchestrator:
+    name: "🎛️ [P4] Dependency Orchestrator"
+    runs-on: ubuntu-latest
+    needs: phase3-alw-allocator
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger garcar-dependency-orchestrator
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'garcar-dependency-orchestrator.yml',
+              ref: 'main'
+            });
+            console.log('✅ garcar-dependency-orchestrator.yml triggered');
+
+  phase4-master-orchestrator:
+    name: "🎛️ [P4] Master Orchestrator"
+    runs-on: ubuntu-latest
+    needs: phase4-dependency-orchestrator
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger master-orchestrator
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'master-orchestrator.yml',
+              ref: 'main'
+            });
+            console.log('✅ master-orchestrator.yml triggered');
+
+  phase4-master-revenue-trigger:
+    name: "🎛️ [P4] Master Revenue Trigger"
+    runs-on: ubuntu-latest
+    needs: phase4-master-orchestrator
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger master-revenue-trigger
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'master-revenue-trigger.yml',
+              ref: 'main'
+            });
+            console.log('✅ master-revenue-trigger.yml triggered');
+
+  # ─── PHASE 5: ACQUISITION & PHONE ─────────────────────────────────────────
+  phase5-customer-acquisition:
+    name: "📈 [P5] Customer Acquisition Loop"
+    runs-on: ubuntu-latest
+    needs: phase4-master-revenue-trigger
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger customer-acquisition-loop
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'customer-acquisition-loop.yml',
+              ref: 'main'
+            });
+            console.log('✅ customer-acquisition-loop.yml triggered');
+
+  phase5-phone-trigger:
+    name: "📱 [P5] Phone Trigger"
+    runs-on: ubuntu-latest
+    needs: phase5-customer-acquisition
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger phone-trigger
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'phone-trigger.yml',
+              ref: 'main'
+            });
+            console.log('✅ phone-trigger.yml triggered');
+
+  # ─── PHASE 6: WATCHDOGS & MERGE AUTOMATION ────────────────────────────────
+  phase6-watchdog:
+    name: "👁️ [P6] Watchdog"
+    runs-on: ubuntu-latest
+    needs: phase5-phone-trigger
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger garcar-watchdog
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'garcar-watchdog.yml',
+              ref: 'main'
+            });
+            console.log('✅ garcar-watchdog.yml triggered');
+
+  phase6-watchdog-v2:
+    name: "👁️ [P6] Watchdog V2"
+    runs-on: ubuntu-latest
+    needs: phase6-watchdog
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger garcar-watchdog-v2
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'garcar-watchdog-v2.yml',
+              ref: 'main'
+            });
+            console.log('✅ garcar-watchdog-v2.yml triggered');
+
+  phase6-auto-merge-copilot:
+    name: "🔀 [P6] Auto Merge Copilot"
+    runs-on: ubuntu-latest
+    needs: phase6-watchdog-v2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger auto-merge-copilot
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'auto-merge-copilot.yml',
+              ref: 'main'
+            });
+            console.log('✅ auto-merge-copilot.yml triggered');
+
+  phase6-auto-approve-merge:
+    name: "🔀 [P6] Auto Approve + Merge"
+    runs-on: ubuntu-latest
+    needs: phase6-auto-merge-copilot
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger auto-approve-merge
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'auto-approve-merge.yml',
+              ref: 'main'
+            });
+            console.log('✅ auto-approve-merge.yml triggered');
+
+  # ─── PHASE 7: HANDS-FREE MASTER (LAST) ────────────────────────────────────
+  phase7-hands-free-master:
+    name: "🤖 [P7] Hands-Free Master — FINAL"
+    runs-on: ubuntu-latest
+    needs: phase6-auto-approve-merge
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger garcar-hands-free-master
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'garcar-hands-free-master.yml',
+              ref: 'main'
+            });
+            console.log('✅ garcar-hands-free-master.yml triggered');
+
+      - name: 🎉 Mass Deploy Complete
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  🚀 GARCAR ENTERPRISE — ALL SYSTEMS GO"
+          echo "  ✅ 23 workflows triggered in 7 phases"
+          echo "  Phase 0: Secrets & Keys (7 workflows)"
+          echo "  Phase 1: Infrastructure & SES (1)"
+          echo "  Phase 2: Deploy Core Engines (3)"
+          echo "  Phase 3: Stripe & Finance (2)"
+          echo "  Phase 4: Orchestrators (3)"
+          echo "  Phase 5: Acquisition & Phone (2)"
+          echo "  Phase 6: Watchdogs & Merge (4)"
+          echo "  Phase 7: Hands-Free Master (1)"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
