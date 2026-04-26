@@ -1,0 +1,110 @@
+# =============================================================================
+# GARCAR PHONE TRIGGER WORKFLOW
+# Called by the Lambda that your phone hits.
+# Receives action param and routes to the right workflow.
+# Can also be triggered directly from GitHub mobile app.
+# =============================================================================
+
+name: 📱 Phone Trigger
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to run: run_all | leads | deploy | provision | orchestrate'
+        required: false
+        default: 'run_all'
+      triggered_by:
+        description: 'Who triggered (phone/perplexity/manual)'
+        required: false
+        default: 'phone'
+
+permissions:
+  id-token: write
+  contents: read
+  actions: write
+
+jobs:
+  route:
+    name: Route → ${{ github.event.inputs.action }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Log trigger
+        run: |
+          echo "Triggered by: ${{ github.event.inputs.triggered_by }}"
+          echo "Action: ${{ github.event.inputs.action }}"
+          echo "Time: $(date -u)"
+
+      - name: Trigger — run_all
+        if: ${{ github.event.inputs.action == 'run_all' || github.event.inputs.action == '' }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'master-revenue-trigger.yml',
+              ref: 'main'
+            });
+            console.log('Dispatched master-revenue-trigger');
+
+      - name: Trigger — leads
+        if: ${{ github.event.inputs.action == 'leads' }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'customer-acquisition-loop.yml',
+              ref: 'main'
+            });
+            console.log('Dispatched customer-acquisition-loop');
+
+      - name: Trigger — deploy
+        if: ${{ github.event.inputs.action == 'deploy' }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'deploy.yml',
+              ref: 'main'
+            });
+            console.log('Dispatched deploy');
+
+      - name: Trigger — provision
+        if: ${{ github.event.inputs.action == 'provision' }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'garcar-zero-key.yml',
+              ref: 'main'
+            });
+            console.log('Dispatched garcar-zero-key');
+
+      - name: Trigger — orchestrate
+        if: ${{ github.event.inputs.action == 'orchestrate' }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'master-orchestrator.yml',
+              ref: 'main'
+            });
+            console.log('Dispatched master-orchestrator');
+
+      - name: Done
+        run: echo "✅ Phone trigger routed successfully — $(date -u)"
