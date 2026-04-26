@@ -1,0 +1,184 @@
+name: 🤖 GARCAR HANDS-FREE MASTER — Zero Touch Revenue
+
+on:
+  schedule:
+    - cron: '0 */2 * * *'   # Every 2 hours automatically
+    - cron: '0 9 * * *'     # Daily 9AM revenue push
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'full | revenue | deploy | sync | health'
+        default: 'full'
+        required: true
+
+jobs:
+
+  # ─── 1. ZERO-KEY AUTH ────────────────────────────────────────────
+  zero-key:
+    name: 🔑 Zero-Key Master
+    uses: ./.github/workflows/garcar-zero-key.yml
+    secrets: inherit
+    if: always()
+
+  # ─── 2. BOOTSTRAP SECRETS ────────────────────────────────────────
+  bootstrap:
+    name: 🔐 Bootstrap Secrets
+    uses: ./.github/workflows/secrets-bootstrap.yml
+    secrets: inherit
+    needs: [zero-key]
+    if: always()
+
+  # ─── 3. PROVISION SECRETS ────────────────────────────────────────
+  provision:
+    name: ⚙️ Auto-Provision Secrets
+    uses: ./.github/workflows/auto-provision-secrets.yml
+    secrets: inherit
+    needs: [bootstrap]
+    if: always()
+
+  # ─── 4. ROTATE KEYS ──────────────────────────────────────────────
+  rotate:
+    name: 🔄 Auto-Rotate Keys
+    uses: ./.github/workflows/auto-rotate-keys.yml
+    secrets: inherit
+    needs: [provision]
+    if: always()
+
+  # ─── 5. MASTER REVENUE TRIGGER ───────────────────────────────────
+  revenue:
+    name: 💰 Master Revenue Trigger
+    uses: ./.github/workflows/master-revenue-trigger.yml
+    secrets: inherit
+    needs: [rotate]
+    if: always()
+
+  # ─── 6. REVENUE BOOTSTRAP ────────────────────────────────────────
+  revenue-bootstrap:
+    name: 🚀 Revenue Bootstrap
+    uses: ./.github/workflows/revenue-bootstrap.yml
+    secrets: inherit
+    needs: [rotate]
+    if: always()
+
+  # ─── 7. CUSTOMER ACQUISITION LOOP ────────────────────────────────
+  acquisition:
+    name: 🎯 Customer Acquisition Loop
+    uses: ./.github/workflows/customer-acquisition-loop.yml
+    secrets: inherit
+    needs: [revenue]
+    if: always()
+
+  # ─── 8. STRIPE CONNECTOR ─────────────────────────────────────────
+  stripe:
+    name: 💳 Stripe Connector
+    uses: ./.github/workflows/master-revenue-trigger.yml
+    secrets: inherit
+    needs: [acquisition]
+    if: always()
+
+  # ─── 9. FULL DEPLOY ──────────────────────────────────────────────
+  deploy:
+    name: 🏗️ Full Deploy
+    uses: ./.github/workflows/deploy.yml
+    secrets: inherit
+    needs: [bootstrap]
+    if: always()
+
+  # ─── 10. MASTER ORCHESTRATOR ─────────────────────────────────────
+  orchestrate:
+    name: 🧠 Master Orchestrator
+    uses: ./.github/workflows/master-orchestrator.yml
+    secrets: inherit
+    needs: [deploy, revenue]
+    if: always()
+
+  # ─── 11. PHONE TRIGGER ───────────────────────────────────────────
+  phone:
+    name: 📱 Phone Trigger
+    uses: ./.github/workflows/phone-trigger.yml
+    secrets: inherit
+    needs: [orchestrate]
+    if: always()
+
+  # ─── 12. BOOTSTRAP AWS KEYS ──────────────────────────────────────
+  aws-bootstrap:
+    name: ☁️ Bootstrap AWS Keys
+    uses: ./.github/workflows/bootstrap-aws-keys.yml
+    secrets: inherit
+    needs: [provision]
+    if: always()
+
+  # ─── 13. SES RECHECK ─────────────────────────────────────────────
+  ses:
+    name: 📧 SES Email Recheck
+    uses: ./.github/workflows/ses-recheck.yml
+    secrets: inherit
+    needs: [deploy]
+    if: always()
+
+  # ─── 14. ALW ALLOCATOR ───────────────────────────────────────────
+  alw:
+    name: 📊 ALW Allocator
+    uses: ./.github/workflows/alw-allocator.yml
+    secrets: inherit
+    needs: [revenue]
+    if: always()
+
+  # ─── 15. SECRETS AUDIT ───────────────────────────────────────────
+  audit:
+    name: 🔍 Secrets Audit
+    uses: ./.github/workflows/secrets-audit.yml
+    secrets: inherit
+    needs: [provision]
+    if: always()
+
+  # ─── 16. AUTO MERGE COPILOT ──────────────────────────────────────
+  auto-merge:
+    name: 🤝 Auto Merge Copilot PRs
+    uses: ./.github/workflows/auto-merge-copilot.yml
+    secrets: inherit
+    needs: [orchestrate]
+    if: always()
+
+  # ─── 17. ZERO TOUCH SECRETS ──────────────────────────────────────
+  zero-touch:
+    name: 🛡️ Zero-Touch Secrets
+    uses: ./.github/workflows/zero-touch-secrets.yml
+    secrets: inherit
+    needs: [rotate]
+    if: always()
+
+  # ─── FINAL STATUS REPORT ─────────────────────────────────────────
+  status:
+    name: 📊 Revenue Status Report
+    runs-on: ubuntu-latest
+    needs:
+      - zero-key
+      - bootstrap
+      - revenue
+      - acquisition
+      - stripe
+      - deploy
+      - orchestrate
+      - phone
+    if: always()
+    steps:
+      - name: Print Pipeline Status
+        run: |
+          echo "══════════════════════════════════════"
+          echo "  🤖 GARCAR REVENUE MACHINE STATUS"
+          echo "══════════════════════════════════════"
+          echo "  Zero-Key:     ${{ needs.zero-key.result }}"
+          echo "  Bootstrap:    ${{ needs.bootstrap.result }}"
+          echo "  Revenue:      ${{ needs.revenue.result }}"
+          echo "  Acquisition:  ${{ needs.acquisition.result }}"
+          echo "  Stripe:       ${{ needs.stripe.result }}"
+          echo "  Deploy:       ${{ needs.deploy.result }}"
+          echo "  Orchestrate:  ${{ needs.orchestrate.result }}"
+          echo "  Phone:        ${{ needs.phone.result }}"
+          echo "══════════════════════════════════════"
+          echo "  Actions: https://github.com/Garrettc123/garcar-autonomous-wealth-system/actions"
+          echo "  Stripe:  https://dashboard.stripe.com/payments"
+          echo "══════════════════════════════════════"
+          echo "  💰 PIPELINE COMPLETE — ZERO TOUCH"
+          echo "══════════════════════════════════════"
