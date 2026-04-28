@@ -1,0 +1,169 @@
+name: 💰 Cashflow Automation System
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 */6 * * *'  # Every 6 hours
+  workflow_dispatch:
+    inputs:
+      force_allocation:
+        description: 'Force revenue allocation run'
+        required: false
+        default: 'false'
+
+env:
+  STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+  STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+  RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+  REDIS_URL: ${{ secrets.REDIS_URL }}
+  QUICKBOOKS_TOKEN: ${{ secrets.QUICKBOOKS_TOKEN }}
+  NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+  LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+
+jobs:
+  # ── STRIPE HEALTH CHECK ──────────────────────────────────────────
+  stripe-health:
+    name: 🔌 Stripe Connectivity Check
+    runs-on: ubuntu-latest
+    outputs:
+      stripe_live: ${{ steps.check.outputs.stripe_live }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install stripe requests
+      - id: check
+        run: |
+          python - <<'EOF'
+          import stripe, os, sys
+          stripe.api_key = os.environ['STRIPE_SECRET_KEY']
+          try:
+              acct = stripe.Account.retrieve()
+              print(f"✅ Stripe LIVE: {acct.id}")
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                  f.write('stripe_live=true\n')
+          except Exception as e:
+              print(f"❌ Stripe ERROR: {e}")
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                  f.write('stripe_live=false\n')
+              sys.exit(1)
+          EOF
+        env:
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+
+  # ── REVENUE ALLOCATION ENGINE ─────────────────────────────────────
+  revenue-allocation:
+    name: 💸 Revenue Allocation (Owner/Ops/Tax/Reinvest)
+    runs-on: ubuntu-latest
+    needs: stripe-health
+    if: needs.stripe-health.outputs.stripe_live == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install stripe requests python-dotenv
+      - name: Run Revenue Allocation
+        run: |
+          python - <<'EOF'
+          import stripe, os, json
+          from datetime import datetime, timezone, timedelta
+
+          stripe.api_key = os.environ['STRIPE_SECRET_KEY']
+
+          # Revenue split rules — Garcar Enterprise
+          SPLITS = {
+              'owner_pay':  0.40,  # 40% — Garrett
+              'operations': 0.25,  # 25% — Ops/tools/infra
+              'tax_reserve': 0.20, # 20% — Tax reserve
+              'reinvest':   0.15,  # 15% — Growth/ads/reinvest
+          }
+
+          # Pull last 6h of successful charges
+          since = int((datetime.now(timezone.utc) - timedelta(hours=6)).timestamp())
+          charges = stripe.Charge.list(limit=100, created={'gte': since})
+
+          total = sum(c.amount for c in charges.auto_paging_iter() if c.status == 'succeeded')
+          total_usd = total / 100
+
+          allocation = {k: round(v * total_usd, 2) for k, v in SPLITS.items()}
+          allocation['total_processed'] = total_usd
+          allocation['timestamp'] = datetime.now(timezone.utc).isoformat()
+          allocation['period'] = 'last_6h'
+
+          print(json.dumps(allocation, indent=2))
+
+          # Write allocation report as artifact
+          with open('allocation_report.json', 'w') as f:
+              json.dump(allocation, f, indent=2)
+
+          print(f"\n✅ ALLOCATED ${total_usd:.2f}")
+          for k, v in allocation.items():
+              if k not in ['total_processed', 'timestamp', 'period']:
+                  print(f"  {k}: ${v}")
+          EOF
+        env:
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+
+      - name: Upload Allocation Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: allocation-report-${{ github.run_id }}
+          path: allocation_report.json
+          retention-days: 90
+
+  # ── CASHFLOW DASHBOARD SYNC ───────────────────────────────────────
+  dashboard-sync:
+    name: 📊 Sync Cashflow Dashboard (Redis + Vercel)
+    runs-on: ubuntu-latest
+    needs: revenue-allocation
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install stripe redis requests
+      - name: Push Metrics to Redis
+        run: python dashboard_api.py
+        env:
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
+
+  # ── LINEAR TASK AUTO-UPDATE ───────────────────────────────────────
+  update-linear:
+    name: 📋 Auto-Update Linear GAR-419→423
+    runs-on: ubuntu-latest
+    needs: [stripe-health, revenue-allocation]
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests
+      - name: Mark Cashflow Tasks In Progress
+        run: |
+          python - <<'EOF'
+          import requests, os
+
+          LINEAR_KEY = os.environ['LINEAR_API_KEY']
+          headers = {"Authorization": LINEAR_KEY, "Content-Type": "application/json"}
+
+          # GAR-419 → In Progress (Stripe setup confirmed live)
+          mutation = '''
+          mutation {
+            issueUpdate(id: "fa524357-fb98-4fcf-b135-7df369426dd9", input: {
+              stateId: "in_progress"
+              comment: "✅ GitHub Actions: Stripe health check PASSED. Cashflow Automation System online."
+            }) { success }
+          }
+          '''
+          r = requests.post(
+              'https://api.linear.app/graphql',
+              json={'query': mutation},
+              headers=headers
+          )
+          print(f"Linear update: {r.status_code} {r.text[:200]}")
+          EOF
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}

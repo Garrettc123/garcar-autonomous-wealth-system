@@ -1,0 +1,148 @@
+name: ⚙️ Delivery & Fulfillment System
+
+on:
+  repository_dispatch:
+    types: [client-payment-received]   # Fired by Stripe webhook → Railway
+  workflow_dispatch:
+    inputs:
+      client_email:
+        description: 'Client email to onboard'
+        required: true
+      service_tier:
+        description: 'Service tier: starter | growth | enterprise'
+        required: true
+        default: 'growth'
+      stripe_payment_id:
+        description: 'Stripe payment intent ID'
+        required: false
+
+env:
+  NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+  LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+  SMTP_HOST: ${{ secrets.SMTP_HOST }}
+  SMTP_USER: ${{ secrets.SMTP_USER }}
+  SMTP_PASS: ${{ secrets.SMTP_PASS }}
+  STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+  GH_TOKEN: ${{ secrets.GH_PAT }}
+
+jobs:
+  # ── CLIENT ONBOARDING PIPELINE ────────────────────────────────────
+  onboard-client:
+    name: 🚀 Auto-Onboard Client
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests notion-client stripe
+
+      - name: Create Notion Workspace for Client
+        run: |
+          python - <<'EOF'
+          import requests, os, json
+          from datetime import datetime
+
+          client_email = os.environ.get('CLIENT_EMAIL', os.environ.get('INPUT_CLIENT_EMAIL', 'new-client@example.com'))
+          service_tier = os.environ.get('INPUT_SERVICE_TIER', 'growth')
+          ts = datetime.utcnow().strftime('%Y-%m-%d')
+
+          NOTION_TOKEN = os.environ['NOTION_TOKEN']
+          headers = {
+              'Authorization': f'Bearer {NOTION_TOKEN}',
+              'Content-Type': 'application/json',
+              'Notion-Version': '2022-06-28'
+          }
+
+          # Create client workspace page
+          page = {
+              'parent': {'type': 'workspace'},  # top-level
+              'properties': {
+                  'title': [{'text': {'content': f'Client: {client_email} [{service_tier.upper()}] — {ts}'}}]
+              },
+              'icon': {'emoji': '🏢'}
+          }
+
+          r = requests.post('https://api.notion.com/v1/pages', headers=headers, json=page)
+          if r.status_code == 200:
+              page_id = r.json()['id']
+              print(f'✅ Notion workspace created: {page_id}')
+          else:
+              print(f'⚠️ Notion: {r.status_code} {r.text[:200]}')
+          EOF
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          INPUT_CLIENT_EMAIL: ${{ github.event.inputs.client_email }}
+          INPUT_SERVICE_TIER: ${{ github.event.inputs.service_tier }}
+
+      - name: Scaffold Linear Project for Client
+        run: |
+          python - <<'EOF'
+          import requests, os
+          from datetime import datetime, timedelta
+
+          LINEAR_KEY = os.environ['LINEAR_API_KEY']
+          client_email = os.environ.get('INPUT_CLIENT_EMAIL', 'new-client@example.com')
+          service_tier = os.environ.get('INPUT_SERVICE_TIER', 'growth')
+          due = (datetime.utcnow() + timedelta(days=30)).strftime('%Y-%m-%d')
+
+          headers = {"Authorization": LINEAR_KEY, "Content-Type": "application/json"}
+
+          mutation = f'''
+          mutation {{
+            projectCreate(input: {{
+              name: "Client Delivery: {client_email} [{service_tier}]"
+              description: "Auto-scaffolded by Garcar Delivery System. Service: {service_tier}. Start: {datetime.utcnow().strftime('%Y-%m-%d')}."
+              targetDate: "{due}"
+              priority: 1
+            }}) {{ project {{ id name }} }}
+          }}
+          '''
+          r = requests.post('https://api.linear.app/graphql', json={'query': mutation}, headers=headers)
+          print(f'Linear project: {r.status_code} {r.text[:300]}')
+          EOF
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          INPUT_CLIENT_EMAIL: ${{ github.event.inputs.client_email }}
+          INPUT_SERVICE_TIER: ${{ github.event.inputs.service_tier }}
+
+      - name: Send Welcome Email
+        run: |
+          python - <<'EOF'
+          import smtplib, os
+          from email.mime.text import MIMEText
+          from email.mime.multipart import MIMEMultipart
+
+          client_email = os.environ.get('INPUT_CLIENT_EMAIL', '')
+          service_tier = os.environ.get('INPUT_SERVICE_TIER', 'growth')
+          if not client_email:
+              print('No client email — skipping welcome email')
+              exit(0)
+
+          msg = MIMEMultipart('alternative')
+          msg['Subject'] = f'🚀 Welcome to Garcar Enterprise — Your {service_tier.title()} Build Starts Now'
+          msg['From'] = os.environ['SMTP_USER']
+          msg['To'] = client_email
+
+          html = f"""
+          <html><body>
+          <h1>Welcome to Garcar Enterprise</h1>
+          <p>Your <strong>{service_tier.upper()}</strong> engagement is now active.</p>
+          <p>Your dedicated Notion workspace and Linear project board have been created.</p>
+          <p>Expect your first project update within 24 hours.</p>
+          <br><p>— Garrett Carrol, Garcar Enterprise</p>
+          </body></html>
+          """
+          msg.attach(MIMEText(html, 'html'))
+
+          with smtplib.SMTP_SSL(os.environ['SMTP_HOST'], 465) as server:
+              server.login(os.environ['SMTP_USER'], os.environ['SMTP_PASS'])
+              server.sendmail(os.environ['SMTP_USER'], client_email, msg.as_string())
+          print(f'✅ Welcome email sent to {client_email}')
+          EOF
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          INPUT_CLIENT_EMAIL: ${{ github.event.inputs.client_email }}
+          INPUT_SERVICE_TIER: ${{ github.event.inputs.service_tier }}

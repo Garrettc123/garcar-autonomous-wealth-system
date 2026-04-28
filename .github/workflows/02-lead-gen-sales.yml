@@ -1,0 +1,117 @@
+name: 🎯 Lead Generation & Sales System
+
+on:
+  schedule:
+    - cron: '0 9 * * 1,3,5'   # Mon/Wed/Fri 9AM CT — outbound fire
+    - cron: '0 18 * * *'       # Daily 6PM CT — nurture sequence
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run mode: outbound | nurture | qualify | all'
+        required: true
+        default: 'all'
+
+env:
+  APOLLO_API_KEY: ${{ secrets.APOLLO_API_KEY }}
+  SMTP_HOST: ${{ secrets.SMTP_HOST }}
+  SMTP_USER: ${{ secrets.SMTP_USER }}
+  SMTP_PASS: ${{ secrets.SMTP_PASS }}
+  HUBSPOT_API_KEY: ${{ secrets.HUBSPOT_API_KEY }}
+  LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+
+jobs:
+  # ── APOLLO OUTBOUND PROSPECTING ──────────────────────────────────
+  apollo-outbound:
+    name: 🔭 Apollo.io — Fire 25 Cold Emails
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 9 * * 1,3,5'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests openai
+      - name: Run Apollo Lead Acquisition
+        run: python lead_acquisition.py
+        env:
+          APOLLO_API_KEY: ${{ secrets.APOLLO_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+
+  # ── LEAD SCORING ENGINE ───────────────────────────────────────────
+  lead-scoring:
+    name: 🏆 Score & Qualify Leads
+    runs-on: ubuntu-latest
+    needs: apollo-outbound
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests openai
+      - name: Run Lead Scoring
+        run: python lead_scoring.py
+        env:
+          APOLLO_API_KEY: ${{ secrets.APOLLO_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          HUBSPOT_API_KEY: ${{ secrets.HUBSPOT_API_KEY }}
+
+  # ── EMAIL NURTURE SEQUENCE ────────────────────────────────────────
+  email-nurture:
+    name: 📧 7-Email Nurture Sequence Dispatch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests openai
+      - name: Fire Nurture Emails
+        run: python email_nurture.py
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+
+  # ── CUSTOMER ACQUISITION LOOP ─────────────────────────────────────
+  acquisition-loop:
+    name: 🔄 Customer Acquisition Loop
+    runs-on: ubuntu-latest
+    needs: [lead-scoring, email-nurture]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests openai stripe
+      - name: Run Acquisition Loop
+        run: python customer_acquisition_loop.py
+        env:
+          APOLLO_API_KEY: ${{ secrets.APOLLO_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+
+  # ── SMS OUTREACH BLAST ────────────────────────────────────────────
+  sms-outreach:
+    name: 📱 SMS Outreach (Hot Leads Only)
+    runs-on: ubuntu-latest
+    needs: lead-scoring
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests twilio
+      - name: SMS Hot Leads
+        run: python sms_outreach.py
+        env:
+          TWILIO_SID: ${{ secrets.TWILIO_SID }}
+          TWILIO_TOKEN: ${{ secrets.TWILIO_TOKEN }}
+          TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
