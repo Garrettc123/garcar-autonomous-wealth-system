@@ -16,6 +16,10 @@ on:
     - cron: '0 8 * * *'
   workflow_dispatch:
     inputs:
+      cash_loop_only:
+        description: 'Run only payment/proof/acquisition path'
+        required: false
+        default: 'true'
       skip_deploy:
         description: 'Skip Lambda deploy'
         required: false
@@ -69,6 +73,12 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install boto3 pynacl requests -q
+      - run: pip install pytest pytest-asyncio stripe -q
+
+      - name: Verify webhook baseline
+        run: |
+          python -m pytest tests/test_stripe_webhook.py -q --asyncio-mode=auto
+          python -c "import stripe_webhook"
 
       - name: AWS Auth
         uses: aws-actions/configure-aws-credentials@v4
@@ -168,7 +178,10 @@ jobs:
   orchestrate:
     name: '🤖 5 Master Orchestrator'
     needs: [health-check, acquire]
-    if: always() && needs.health-check.outputs.ready == 'true'
+    if: |
+      always() &&
+      needs.health-check.outputs.ready == 'true' &&
+      github.event.inputs.cash_loop_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -228,7 +241,10 @@ jobs:
   compound:
     name: '💵 6 Revenue Compounding'
     needs: orchestrate
-    if: always() && needs.orchestrate.result != 'cancelled'
+    if: |
+      always() &&
+      github.event.inputs.cash_loop_only != 'true' &&
+      needs.orchestrate.result != 'cancelled'
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -279,7 +295,10 @@ jobs:
   amplify:
     name: '📈 7 Performance Amplifier'
     needs: compound
-    if: always() && needs.compound.result != 'cancelled'
+    if: |
+      always() &&
+      github.event.inputs.cash_loop_only != 'true' &&
+      needs.compound.result != 'cancelled'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -320,7 +339,10 @@ jobs:
   alw:
     name: '💰 8 ALW Allocation'
     needs: amplify
-    if: always() && needs.amplify.result != 'cancelled'
+    if: |
+      always() &&
+      github.event.inputs.cash_loop_only != 'true' &&
+      needs.amplify.result != 'cancelled'
     uses: ./.github/workflows/alw-allocator.yml
     secrets: inherit
 
@@ -330,7 +352,9 @@ jobs:
   monitor:
     name: '🩺 9 System Monitor'
     needs: alw
-    if: always()
+    if: |
+      always() &&
+      github.event.inputs.cash_loop_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
