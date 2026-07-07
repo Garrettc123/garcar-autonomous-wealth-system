@@ -14,8 +14,10 @@ def test_run_fulfillment_dispatches_payment_events(monkeypatch):
     }
     published = []
     dispatched = []
+    request_calls = []
 
     monkeypatch.setenv("FULFILLMENT_WEBHOOK_URL", "https://example.com/fulfillment")
+    monkeypatch.setenv("FULFILLMENT_WEBHOOK_SECRET", "super-secret")
     monkeypatch.setattr(
         orchestrator_master.integration_event_bus,
         "read_events_sync",
@@ -39,7 +41,7 @@ def test_run_fulfillment_dispatches_payment_events(monkeypatch):
     monkeypatch.setattr(
         orchestrator_master.requests,
         "post",
-        lambda *args, **kwargs: SimpleNamespace(
+        lambda *args, **kwargs: request_calls.append((args, kwargs)) or SimpleNamespace(
             status_code=202,
             raise_for_status=lambda: None,
         ),
@@ -50,3 +52,4 @@ def test_run_fulfillment_dispatches_payment_events(monkeypatch):
     assert orchestrator.metrics["fulfillment_dispatches"] == 1
     assert dispatched[0][0] == "evt_payment_1"
     assert published[0]["event_type"] == "fulfillment.started"
+    assert request_calls[0][1]["headers"]["X-Garcar-Webhook-Secret"] == "super-secret"

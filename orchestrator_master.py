@@ -205,6 +205,7 @@ class MasterOrchestrator:
     def run_fulfillment(self):
         print("\n[3b/8] Fulfillment Dispatch")
         fulfillment_url = os.environ.get('FULFILLMENT_WEBHOOK_URL', '').strip()
+        fulfillment_secret = os.environ.get('FULFILLMENT_WEBHOOK_SECRET', '').strip()
         if not fulfillment_url:
             print("  ⚠️  FULFILLMENT_WEBHOOK_URL not configured — skipping")
             return
@@ -224,6 +225,13 @@ class MasterOrchestrator:
                 response = requests.post(
                     fulfillment_url,
                     json={"trigger": "payment.confirmed", "event": event},
+                    headers={
+                        "Content-Type": "application/json",
+                        **(
+                            {"X-Garcar-Webhook-Secret": fulfillment_secret}
+                            if fulfillment_secret else {}
+                        ),
+                    },
                     timeout=10,
                 )
                 response.raise_for_status()

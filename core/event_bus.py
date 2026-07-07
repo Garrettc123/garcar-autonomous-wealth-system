@@ -69,6 +69,9 @@ def build_event(
 
 
 class IntegrationEventBus:
+    DEFAULT_MAX_BUFFER_SIZE = int(os.getenv("GARCAR_EVENT_BUFFER_SIZE", "1000"))
+    DEFAULT_BUFFER_TRIM_SIZE = int(os.getenv("GARCAR_EVENT_BUFFER_TRIM_SIZE", "500"))
+
     def __init__(
         self,
         *,
@@ -89,6 +92,8 @@ class IntegrationEventBus:
             "garcar:fulfillment:dispatched",
         )
         self.use_redis = REDIS_AVAILABLE if use_redis is None else use_redis
+        self.max_buffer_size = self.DEFAULT_MAX_BUFFER_SIZE
+        self.buffer_trim_size = min(self.DEFAULT_BUFFER_TRIM_SIZE, self.max_buffer_size)
         self._redis: Optional[Any] = None
         self._buffer: List[Dict[str, Any]] = []
         self._dispatched: set[str] = set()
@@ -116,8 +121,8 @@ class IntegrationEventBus:
 
     async def publish_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
         self._buffer.append(event)
-        if len(self._buffer) > 1000:
-            self._buffer = self._buffer[-500:]
+        if len(self._buffer) > self.max_buffer_size:
+            self._buffer = self._buffer[-self.buffer_trim_size:]
 
         redis = await self._connect()
         if redis is not None:
@@ -215,7 +220,7 @@ class IntegrationEventBus:
             task.add_done_callback(self._pending_tasks.discard)
             return task
         raise RuntimeError(
-            "Cannot call read_events_sync() from async context. Use await read_events() instead.",
+            "Cannot call sync event bus methods from async context. Use await instead.",
         )
 
     def publish_sync(self, event: Dict[str, Any]) -> Dict[str, Any]:
