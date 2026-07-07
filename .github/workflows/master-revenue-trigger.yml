@@ -47,7 +47,7 @@ permissions:
   actions: write
 
 env:
-  CASH_LOOP_ONLY: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.cash_loop_only == 'true' }}
+  CASH_LOOP_ONLY: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.cash_loop_only == 'true') }}
 
 jobs:
   # ====================================================================

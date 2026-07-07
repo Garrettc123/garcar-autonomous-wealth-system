@@ -73,10 +73,7 @@ jobs:
             exit 0
           fi
           if [ -z "$DASHBOARD_URL" ] || [ -z "$UPGRADE_URL" ]; then
-            MISSING=()
-            [ -z "$DASHBOARD_URL" ] && MISSING+=("DASHBOARD_URL")
-            [ -z "$UPGRADE_URL" ] && MISSING+=("UPGRADE_URL")
-            echo "⚠️ Missing required secrets: ${MISSING[*]} — skipping"
+            echo "⚠️ DASHBOARD_URL and UPGRADE_URL are required — skipping"
             exit 0
           fi
 
