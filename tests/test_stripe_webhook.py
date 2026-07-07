@@ -3,6 +3,10 @@ from types import SimpleNamespace
 import stripe_webhook
 
 
+def raise_publish_error(event):
+    raise RuntimeError("bus down")
+
+
 def test_revenue_event_publishes_payment_confirmed(monkeypatch):
     published = []
     fake_event = {
@@ -73,7 +77,7 @@ def test_revenue_event_tolerates_event_bus_publish_failure(monkeypatch):
     monkeypatch.setattr(
         stripe_webhook.integration_event_bus,
         "publish_sync",
-        lambda event: (_ for _ in ()).throw(RuntimeError("bus down")),
+        raise_publish_error,
     )
 
     result = stripe_webhook.handle_event(b"{}", "sig")

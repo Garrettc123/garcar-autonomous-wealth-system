@@ -210,16 +210,19 @@ class RHNSEngine:
     async def _emit(self, event: str, data: Dict):
         entry = {"event": event, "ts": time.time(), "data": data}
         self.event_bus.append(entry)
-        await integration_event_bus.publish_event(
-            build_event(
-                event,
-                data,
-                source="garcar-autonomous-wealth-system/rhns",
-                entity_type="rhns_event",
-                entity_id=data.get("task_id") or data.get("node_id"),
-                correlation_id=data.get("task_id") or data.get("node_id"),
+        try:
+            await integration_event_bus.publish_event(
+                build_event(
+                    event,
+                    data,
+                    source="garcar-autonomous-wealth-system/rhns",
+                    entity_type="rhns_event",
+                    entity_id=data.get("task_id") or data.get("node_id"),
+                    correlation_id=data.get("task_id") or data.get("node_id"),
+                )
             )
-        )
+        except Exception as e:
+            log.error("Event bus publish failed for %s: %s", event, e)
         for hook in self._hooks.get(event, []):
             try:
                 await asyncio.ensure_future(hook(data)) if asyncio.iscoroutinefunction(hook) \

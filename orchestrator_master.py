@@ -206,13 +206,15 @@ class MasterOrchestrator:
         print("\n[3b/8] Fulfillment Dispatch")
         fulfillment_url = os.environ.get('FULFILLMENT_WEBHOOK_URL', '').strip()
         fulfillment_secret = os.environ.get('FULFILLMENT_WEBHOOK_SECRET', '').strip()
+        batch_size = int(os.environ.get('GARCAR_FULFILLMENT_BATCH_SIZE', '25'))
+        timeout = float(os.environ.get('FULFILLMENT_WEBHOOK_TIMEOUT', '10'))
         if not fulfillment_url:
             print("  ⚠️  FULFILLMENT_WEBHOOK_URL not configured — skipping")
             return
 
         payment_events = integration_event_bus.read_events_sync(
             event_type='payment.confirmed',
-            count=25,
+            count=batch_size,
         )
         dispatched = 0
 
@@ -232,7 +234,7 @@ class MasterOrchestrator:
                             if fulfillment_secret else {}
                         ),
                     },
-                    timeout=10,
+                    timeout=timeout,
                 )
                 response.raise_for_status()
 

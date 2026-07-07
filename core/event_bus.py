@@ -218,10 +218,18 @@ class IntegrationEventBus:
             task = loop.create_task(coro)
             self._pending_tasks.add(task)
             task.add_done_callback(self._pending_tasks.discard)
+            task.add_done_callback(self._log_background_task_failure)
             return task
         raise RuntimeError(
             "Cannot call sync event bus methods from async context. Use await instead.",
         )
+
+    @staticmethod
+    def _log_background_task_failure(task: asyncio.Task) -> None:
+        try:
+            task.result()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Background event bus task failed: %s", exc)
 
     def publish_sync(self, event: Dict[str, Any]) -> Dict[str, Any]:
         self._run_sync(self.publish_event(event), allow_background=True)
