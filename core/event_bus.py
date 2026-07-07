@@ -71,6 +71,7 @@ def build_event(
 class IntegrationEventBus:
     DEFAULT_MAX_BUFFER_SIZE = int(os.getenv("GARCAR_EVENT_BUFFER_SIZE", "1000"))
     DEFAULT_BUFFER_TRIM_SIZE = int(os.getenv("GARCAR_EVENT_BUFFER_TRIM_SIZE", "500"))
+    DEFAULT_MAX_PENDING_TASKS = int(os.getenv("GARCAR_EVENT_MAX_PENDING_TASKS", "100"))
 
     def __init__(
         self,
@@ -94,6 +95,7 @@ class IntegrationEventBus:
         self.use_redis = REDIS_AVAILABLE if use_redis is None else use_redis
         self.max_buffer_size = self.DEFAULT_MAX_BUFFER_SIZE
         self.buffer_trim_size = min(self.DEFAULT_BUFFER_TRIM_SIZE, self.max_buffer_size)
+        self.max_pending_tasks = self.DEFAULT_MAX_PENDING_TASKS
         self._redis: Optional[Any] = None
         self._buffer: List[Dict[str, Any]] = []
         self._dispatched: set[str] = set()
@@ -215,6 +217,9 @@ class IntegrationEventBus:
             return asyncio.run(coro)
 
         if allow_background:
+            if len(self._pending_tasks) >= self.max_pending_tasks:
+                coro.close()
+                raise RuntimeError("Too many pending event bus tasks")
             task = loop.create_task(coro)
             self._pending_tasks.add(task)
             task.add_done_callback(self._pending_tasks.discard)

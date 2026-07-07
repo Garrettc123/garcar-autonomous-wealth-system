@@ -19,6 +19,14 @@ def test_run_fulfillment_dispatches_payment_events(monkeypatch):
     monkeypatch.setenv("FULFILLMENT_WEBHOOK_URL", "https://example.com/fulfillment")
     monkeypatch.setenv("FULFILLMENT_WEBHOOK_SECRET", "super-secret")
     monkeypatch.setattr(
+        orchestrator_master,
+        "get_secret",
+        lambda key, required=False: {
+            "FULFILLMENT_WEBHOOK_URL": "https://example.com/fulfillment",
+            "FULFILLMENT_WEBHOOK_SECRET": "super-secret",
+        }.get(key),
+    )
+    monkeypatch.setattr(
         orchestrator_master.integration_event_bus,
         "read_events_sync",
         lambda **kwargs: [event],

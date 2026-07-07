@@ -43,6 +43,7 @@ from typing import Dict, Any, List
 import requests
 
 from core.event_bus import build_event, integration_event_bus
+from secrets_manager import get as get_secret
 
 # ── Load all secrets from SSM before anything else ──────────────────────────
 try:
@@ -204,8 +205,8 @@ class MasterOrchestrator:
 
     def run_fulfillment(self):
         print("\n[3b/8] Fulfillment Dispatch")
-        fulfillment_url = os.environ.get('FULFILLMENT_WEBHOOK_URL', '').strip()
-        fulfillment_secret = os.environ.get('FULFILLMENT_WEBHOOK_SECRET', '').strip()
+        fulfillment_url = (get_secret('FULFILLMENT_WEBHOOK_URL') or '').strip()
+        fulfillment_secret = (get_secret('FULFILLMENT_WEBHOOK_SECRET') or '').strip()
         batch_size = int(os.environ.get('GARCAR_FULFILLMENT_BATCH_SIZE', '25'))
         timeout = float(os.environ.get('FULFILLMENT_WEBHOOK_TIMEOUT', '10'))
         if not fulfillment_url:
@@ -260,12 +261,12 @@ class MasterOrchestrator:
                     )
                 )
                 dispatched += 1
-            except Exception as e:
-                print(f"  ❌ Fulfillment dispatch failed for {event_id}: {e}")
+            except Exception as exc:
+                print(f"  ❌ Fulfillment dispatch failed for {event_id}: {exc}")
                 self.metrics['errors'].append({
                     'step': 'fulfillment_dispatch',
                     'event_id': event_id,
-                    'error': str(e),
+                    'error': str(exc),
                     'ts': datetime.now(timezone.utc).isoformat(),
                 })
 
@@ -387,7 +388,12 @@ class MasterOrchestrator:
         print(f"  Cycle #{self.cycle} complete")
         print(f"  Leads:    {self.metrics['leads_scraped']} scraped / {self.metrics['leads_qualified']} qualified")
         print(f"  Outreach: {self.metrics['emails_sent']} emails / {self.metrics['sms_sent']} SMS")
-        print(f"  Revenue:  {self.metrics['revenue_events']} events / {self.metrics['fulfillment_dispatches']} fulfillment dispatches / {self.metrics['affiliates_paid']} affiliate payouts")
+        revenue_summary = (
+            f"  Revenue:  {self.metrics['revenue_events']} events / "
+            f"{self.metrics['fulfillment_dispatches']} fulfillment dispatches / "
+            f"{self.metrics['affiliates_paid']} affiliate payouts"
+        )
+        print(revenue_summary)
         print(f"  Errors:   {len(self.metrics['errors'])}")
         print("─"*64 + "\n")
         return self.metrics
