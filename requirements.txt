@@ -21,6 +21,7 @@ uvicorn>=0.29.0
 
 # Data and Utilities
 python-dotenv>=1.0.0
+redis>=5.0.8
 
 # ML Lead Scoring
 scikit-learn>=1.4.0

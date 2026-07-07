@@ -40,6 +40,10 @@ import traceback
 from datetime import datetime, timezone
 from typing import Dict, Any, List
 
+import requests
+
+from core.event_bus import build_event, integration_event_bus
+
 # ── Load all secrets from SSM before anything else ──────────────────────────
 try:
     from secrets_provisioner import SecretsProvisioner
@@ -92,6 +96,7 @@ class MasterOrchestrator:
             'emails_sent':        0,
             'sms_sent':           0,
             'revenue_events':     0,
+            'fulfillment_dispatches': 0,
             'affiliates_paid':    0,
             'rlhf_improvements':  0,
             'errors':             [],
@@ -197,6 +202,57 @@ class MasterOrchestrator:
             capture_output=True, timeout=60
         ))
 
+    def run_fulfillment_dispatch(self):
+        print("\n[3b/8] Fulfillment Dispatch")
+        fulfillment_url = os.environ.get('FULFILLMENT_WEBHOOK_URL', '').strip()
+        if not fulfillment_url:
+            print("  ⚠️  FULFILLMENT_WEBHOOK_URL not configured — skipping")
+            return
+
+        payment_events = integration_event_bus.read_events_sync(
+            event_type='payment.confirmed',
+            count=25,
+        )
+        dispatched = 0
+
+        for event in payment_events:
+            event_id = event.get('event_id')
+            if not event_id or integration_event_bus.is_dispatched_sync(event_id):
+                continue
+
+            response = requests.post(
+                fulfillment_url,
+                json={"trigger": "payment.confirmed", "event": event},
+                timeout=10,
+            )
+            response.raise_for_status()
+
+            integration_event_bus.mark_dispatched_sync(
+                event_id,
+                dispatcher='fulfillment',
+                result={"status_code": response.status_code},
+            )
+            integration_event_bus.publish_sync(
+                build_event(
+                    "fulfillment.started",
+                    {
+                        "upstream_event_id": event_id,
+                        "fulfillment_url": fulfillment_url,
+                        "status_code": response.status_code,
+                    },
+                    source="garcar-autonomous-wealth-system/orchestrator",
+                    entity_type="fulfillment",
+                    entity_id=event.get('entity_id') or event_id,
+                    correlation_id=event_id,
+                    metadata={"dispatcher": "fulfillment"},
+                    status="dispatched",
+                )
+            )
+            dispatched += 1
+
+        self.metrics['fulfillment_dispatches'] += dispatched
+        print(f"  ✅ Fulfillment dispatched: {dispatched}")
+
     # ── 4. AI Agent Coordination ─────────────────────────────────────────────
     def run_agents(self):
         print("\n[4/8] AI Agent Coordination")
@@ -301,6 +357,7 @@ class MasterOrchestrator:
         leads = self.run_lead_pipeline()
         self.run_outreach(leads)
         self.run_revenue_processing()
+        self._run('fulfillment_dispatch', self.run_fulfillment_dispatch)
         self.run_agents()
         self.run_wealth_allocation()
         self.run_linear_sync()
@@ -311,7 +368,7 @@ class MasterOrchestrator:
         print(f"  Cycle #{self.cycle} complete")
         print(f"  Leads:    {self.metrics['leads_scraped']} scraped / {self.metrics['leads_qualified']} qualified")
         print(f"  Outreach: {self.metrics['emails_sent']} emails / {self.metrics['sms_sent']} SMS")
-        print(f"  Revenue:  {self.metrics['revenue_events']} events / {self.metrics['affiliates_paid']} affiliate payouts")
+        print(f"  Revenue:  {self.metrics['revenue_events']} events / {self.metrics['fulfillment_dispatches']} fulfillment dispatches / {self.metrics['affiliates_paid']} affiliate payouts")
         print(f"  Errors:   {len(self.metrics['errors'])}")
         print("─"*64 + "\n")
         return self.metrics
