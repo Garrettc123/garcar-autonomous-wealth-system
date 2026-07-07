@@ -73,7 +73,7 @@ jobs:
             exit 0
           fi
           if [ -z "$DASHBOARD_URL" ] || [ -z "$UPGRADE_URL" ]; then
-            echo "⚠️ DASHBOARD_URL and UPGRADE_URL are required — skipping"
+            echo "⚠️ DASHBOARD_URL and/or UPGRADE_URL are required — skipping"
             exit 0
           fi
 

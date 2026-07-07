@@ -46,9 +46,6 @@ permissions:
   contents: write
   actions: write
 
-env:
-  CASH_LOOP_ONLY: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.cash_loop_only == 'true') }}
-
 jobs:
   # ====================================================================
   # STAGE 1: Secrets + SES Health
@@ -187,29 +184,29 @@ jobs:
 
     steps:
       - name: Cash-loop-only short circuit
-        if: env.CASH_LOOP_ONLY == 'true'
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.cash_loop_only == 'true')
         run: echo "cash_loop_only=true, skipping orchestrator stage."
 
-      - if: env.CASH_LOOP_ONLY != 'true'
+      - if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || github.event.inputs.cash_loop_only != 'true')
         uses: actions/checkout@v4
-      - if: env.CASH_LOOP_ONLY != 'true'
+      - if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || github.event.inputs.cash_loop_only != 'true')
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - if: env.CASH_LOOP_ONLY != 'true'
+      - if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || github.event.inputs.cash_loop_only != 'true')
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       - name: Install deps
-        if: env.CASH_LOOP_ONLY != 'true'
+        if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || github.event.inputs.cash_loop_only != 'true')
         run: |
           pip install -r requirements.txt -q
           pip install boto3 pynacl requests stripe openai twilio -q
           npm install 2>/dev/null || true
 
       - name: Check secrets
-        if: env.CASH_LOOP_ONLY != 'true'
+        if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || github.event.inputs.cash_loop_only != 'true')
         env:
           AWS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -220,7 +217,7 @@ jobs:
           fi
 
       - name: AWS Auth
-        if: env.CASH_LOOP_ONLY != 'true'
+        if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || github.event.inputs.cash_loop_only != 'true')
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -229,7 +226,7 @@ jobs:
         continue-on-error: true
 
       - name: Run Master Orchestrator
-        if: env.CASH_LOOP_ONLY != 'true'
+        if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || github.event.inputs.cash_loop_only != 'true')
         env:
           GITHUB_TOKEN:       ${{ secrets.GITHUB_TOKEN }}
           AWS_REGION:         ${{ secrets.AWS_REGION || 'us-east-1' }}
@@ -254,7 +251,8 @@ jobs:
     needs: orchestrate
     if: |
       always() &&
-      env.CASH_LOOP_ONLY != 'true' &&
+      github.event_name != 'schedule' &&
+      (github.event_name != 'workflow_dispatch' || github.event.inputs.cash_loop_only != 'true') &&
       needs.orchestrate.result != 'cancelled'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -308,7 +306,8 @@ jobs:
     needs: compound
     if: |
       always() &&
-      env.CASH_LOOP_ONLY != 'true' &&
+      github.event_name != 'schedule' &&
+      (github.event_name != 'workflow_dispatch' || github.event.inputs.cash_loop_only != 'true') &&
       needs.compound.result != 'cancelled'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -352,7 +351,8 @@ jobs:
     needs: amplify
     if: |
       always() &&
-      env.CASH_LOOP_ONLY != 'true' &&
+      github.event_name != 'schedule' &&
+      (github.event_name != 'workflow_dispatch' || github.event.inputs.cash_loop_only != 'true') &&
       needs.amplify.result != 'cancelled'
     uses: ./.github/workflows/alw-allocator.yml
     secrets: inherit
@@ -365,7 +365,8 @@ jobs:
     needs: alw
     if: |
       always() &&
-      env.CASH_LOOP_ONLY != 'true'
+      github.event_name != 'schedule' &&
+      (github.event_name != 'workflow_dispatch' || github.event.inputs.cash_loop_only != 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
