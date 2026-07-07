@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
@@ -92,12 +93,15 @@ class IntegrationEventBus:
         self._buffer: List[Dict[str, Any]] = []
         self._dispatched: set[str] = set()
         self._last_error: Optional[str] = None
+        self._next_retry_at = 0.0
 
     async def _connect(self) -> Optional[Any]:
         if not self.use_redis:
             return None
         if self._redis is not None:
             return self._redis
+        if time.time() < self._next_retry_at:
+            return None
         try:
             self._redis = await aioredis.from_url(self.redis_url, decode_responses=True)
             await self._redis.ping()
@@ -105,6 +109,7 @@ class IntegrationEventBus:
         except Exception as exc:  # noqa: BLE001
             self._last_error = str(exc)
             self._redis = None
+            self._next_retry_at = time.time() + 30
             log.warning("Redis unavailable for event bus, using memory fallback: %s", exc)
             return None
 

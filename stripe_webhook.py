@@ -5,7 +5,7 @@ Deploy as a FastAPI route or AWS Lambda behind API Gateway.
 import json
 import os
 import stripe
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict
 
 from abundance_wallet import run as alw_run
@@ -107,7 +107,7 @@ def _handle_revenue_event(event: Dict) -> Dict:
         'customer_email': customer_email,
         'alw_total':      alw_dist.alw_total,
         'integration_event_id': payment_event['event_id'],
-        'timestamp':      datetime.utcnow().isoformat() + 'Z',
+        'timestamp':      datetime.now(timezone.utc).isoformat(),
     }
 
 
