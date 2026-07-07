@@ -73,8 +73,8 @@ jobs:
             exit 0
           fi
           if [ -z "$DASHBOARD_URL" ] || [ -z "$UPGRADE_URL" ]; then
-            echo "⚠️ DASHBOARD_URL or UPGRADE_URL not configured — skipping"
-            exit 0
+            echo "❌ DASHBOARD_URL and UPGRADE_URL are required for live proof/payment traffic"
+            exit 1
           fi
 
       - name: AWS Auth
