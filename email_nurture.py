@@ -93,17 +93,15 @@ EMAIL_TEMPLATES = {
 <h2>You're Halfway Through Your Garcar Trial</h2>
 <p>Hi {name},</p>
 <p>7 days in! Here's a summary of your activity so far.</p>
-<p>To keep everything running after your trial, upgrade to a paid plan:</p>
+<p>To keep everything running after your trial, upgrade to your live automation offer:</p>
 <ul>
-  <li><strong>Basic</strong> – $49/mo</li>
-  <li><strong>Pro</strong> – $99/mo (most popular)</li>
-  <li><strong>Enterprise</strong> – $299/mo</li>
+  <li><strong>Texas Automation Service</strong> – $497/mo</li>
 </ul>
 <p><a href="{upgrade_url}">Upgrade Now →</a></p>
 <p>– The Garcar Team</p>
 </body></html>
 """,
-        'text': "Hi {name}, 7 days in! Upgrade to Basic $49, Pro $99, or Enterprise $299 at {upgrade_url}"
+        'text': "Hi {name}, 7 days in! Upgrade to the Texas Automation Service at $497/mo: {upgrade_url}"
     },
     'trial_ending_soon': {
         'html': """

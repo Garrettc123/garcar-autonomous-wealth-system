@@ -16,6 +16,10 @@ on:
     - cron: '0 8 * * *'
   workflow_dispatch:
     inputs:
+      cash_loop_only:
+        description: 'Run only payment/proof/acquisition path'
+        required: false
+        default: 'true'
       skip_deploy:
         description: 'Skip Lambda deploy'
         required: false
@@ -69,6 +73,12 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install boto3 pynacl requests -q
+      - run: pip install pytest pytest-asyncio stripe -q
+
+      - name: Verify webhook baseline
+        run: |
+          python -m pytest tests/test_stripe_webhook.py -q --asyncio-mode=auto
+          python -c "import stripe_webhook"
 
       - name: AWS Auth
         uses: aws-actions/configure-aws-credentials@v4
@@ -173,21 +183,30 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Cash-loop-only short circuit
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.cash_loop_only == 'true')
+        run: echo "cash_loop_only=true, skipping orchestrator stage."
+
+      - if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || github.event.inputs.cash_loop_only != 'true')
+        uses: actions/checkout@v4
+      - if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || github.event.inputs.cash_loop_only != 'true')
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - uses: actions/setup-node@v4
+      - if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || github.event.inputs.cash_loop_only != 'true')
+        uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       - name: Install deps
+        if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || github.event.inputs.cash_loop_only != 'true')
         run: |
           pip install -r requirements.txt -q
           pip install boto3 pynacl requests stripe openai twilio -q
           npm install 2>/dev/null || true
 
       - name: Check secrets
+        if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || github.event.inputs.cash_loop_only != 'true')
         env:
           AWS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -198,6 +217,7 @@ jobs:
           fi
 
       - name: AWS Auth
+        if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || github.event.inputs.cash_loop_only != 'true')
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -206,6 +226,7 @@ jobs:
         continue-on-error: true
 
       - name: Run Master Orchestrator
+        if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || github.event.inputs.cash_loop_only != 'true')
         env:
           GITHUB_TOKEN:       ${{ secrets.GITHUB_TOKEN }}
           AWS_REGION:         ${{ secrets.AWS_REGION || 'us-east-1' }}
@@ -228,7 +249,11 @@ jobs:
   compound:
     name: '💵 6 Revenue Compounding'
     needs: orchestrate
-    if: always() && needs.orchestrate.result != 'cancelled'
+    if: |
+      always() &&
+      github.event_name != 'schedule' &&
+      (github.event_name != 'workflow_dispatch' || github.event.inputs.cash_loop_only != 'true') &&
+      needs.orchestrate.result != 'cancelled'
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -279,7 +304,11 @@ jobs:
   amplify:
     name: '📈 7 Performance Amplifier'
     needs: compound
-    if: always() && needs.compound.result != 'cancelled'
+    if: |
+      always() &&
+      github.event_name != 'schedule' &&
+      (github.event_name != 'workflow_dispatch' || github.event.inputs.cash_loop_only != 'true') &&
+      needs.compound.result != 'cancelled'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -320,7 +349,11 @@ jobs:
   alw:
     name: '💰 8 ALW Allocation'
     needs: amplify
-    if: always() && needs.amplify.result != 'cancelled'
+    if: |
+      always() &&
+      github.event_name != 'schedule' &&
+      (github.event_name != 'workflow_dispatch' || github.event.inputs.cash_loop_only != 'true') &&
+      needs.amplify.result != 'cancelled'
     uses: ./.github/workflows/alw-allocator.yml
     secrets: inherit
 
@@ -330,7 +363,10 @@ jobs:
   monitor:
     name: '🩺 9 System Monitor'
     needs: alw
-    if: always()
+    if: |
+      always() &&
+      github.event_name != 'schedule' &&
+      (github.event_name != 'workflow_dispatch' || github.event.inputs.cash_loop_only != 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 10
 

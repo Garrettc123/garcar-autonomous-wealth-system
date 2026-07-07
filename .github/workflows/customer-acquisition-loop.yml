@@ -57,6 +57,8 @@ jobs:
           AWS_SECRET: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           APOLLO_KEY: ${{ secrets.APOLLO_API_KEY }}
           SES_EMAIL: ${{ secrets.SES_SENDER_EMAIL }}
+          DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
+          UPGRADE_URL: ${{ secrets.UPGRADE_URL }}
         run: |
           if [ -z "$AWS_KEY" ] || [ -z "$AWS_SECRET" ]; then
             echo "⚠️ AWS credentials not configured — skipping"
@@ -68,6 +70,10 @@ jobs:
           fi
           if [ -z "$SES_EMAIL" ]; then
             echo "⚠️ SES_SENDER_EMAIL not configured — skipping"
+            exit 0
+          fi
+          if [ -z "$DASHBOARD_URL" ] || [ -z "$UPGRADE_URL" ]; then
+            echo "⚠️ DASHBOARD_URL and/or UPGRADE_URL are required — skipping"
             exit 0
           fi
 
@@ -83,11 +89,11 @@ jobs:
           APOLLO_API_KEY:            ${{ secrets.APOLLO_API_KEY }}
           AWS_REGION:                ${{ secrets.AWS_REGION || 'us-east-1' }}
           SES_SENDER_EMAIL:          ${{ secrets.SES_SENDER_EMAIL }}
-          DASHBOARD_URL:             ${{ secrets.DASHBOARD_URL || 'https://app.garcar.io/dashboard' }}
-          UPGRADE_URL:               ${{ secrets.UPGRADE_URL   || 'https://app.garcar.io/upgrade' }}
+          DASHBOARD_URL:             ${{ secrets.DASHBOARD_URL }}
+          UPGRADE_URL:               ${{ secrets.UPGRADE_URL }}
           LEADS_PER_CYCLE:           ${{ inputs.leads_per_cycle || '50' }}
           MIN_LEAD_SCORE:            '60'
-          REVENUE_PER_CLOSE:         '499'
+          REVENUE_PER_CLOSE:         '497'
           ESTIMATED_CONVERSION_RATE: '0.05'
           ACQ_LEDGER_PATH:           acquisition_ledger.json
           ALW_LEDGER_PATH:           alw_ledger.json
