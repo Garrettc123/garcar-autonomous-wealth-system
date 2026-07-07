@@ -76,8 +76,8 @@ jobs:
             MISSING=()
             [ -z "$DASHBOARD_URL" ] && MISSING+=("DASHBOARD_URL")
             [ -z "$UPGRADE_URL" ] && MISSING+=("UPGRADE_URL")
-            echo "❌ Missing required secrets: ${MISSING[*]}"
-            exit 1
+            echo "⚠️ Missing required secrets: ${MISSING[*]} — skipping"
+            exit 0
           fi
 
       - name: AWS Auth

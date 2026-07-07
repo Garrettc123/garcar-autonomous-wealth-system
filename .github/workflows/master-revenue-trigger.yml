@@ -46,6 +46,9 @@ permissions:
   contents: write
   actions: write
 
+env:
+  CASH_LOOP_ONLY: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.cash_loop_only == 'true' }}
+
 jobs:
   # ====================================================================
   # STAGE 1: Secrets + SES Health
@@ -184,29 +187,29 @@ jobs:
 
     steps:
       - name: Cash-loop-only short circuit
-        if: github.event.inputs.cash_loop_only == 'true'
+        if: env.CASH_LOOP_ONLY == 'true'
         run: echo "cash_loop_only=true, skipping orchestrator stage."
 
-      - if: github.event.inputs.cash_loop_only != 'true'
+      - if: env.CASH_LOOP_ONLY != 'true'
         uses: actions/checkout@v4
-      - if: github.event.inputs.cash_loop_only != 'true'
+      - if: env.CASH_LOOP_ONLY != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - if: github.event.inputs.cash_loop_only != 'true'
+      - if: env.CASH_LOOP_ONLY != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       - name: Install deps
-        if: github.event.inputs.cash_loop_only != 'true'
+        if: env.CASH_LOOP_ONLY != 'true'
         run: |
           pip install -r requirements.txt -q
           pip install boto3 pynacl requests stripe openai twilio -q
           npm install 2>/dev/null || true
 
       - name: Check secrets
-        if: github.event.inputs.cash_loop_only != 'true'
+        if: env.CASH_LOOP_ONLY != 'true'
         env:
           AWS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -217,7 +220,7 @@ jobs:
           fi
 
       - name: AWS Auth
-        if: github.event.inputs.cash_loop_only != 'true'
+        if: env.CASH_LOOP_ONLY != 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -226,7 +229,7 @@ jobs:
         continue-on-error: true
 
       - name: Run Master Orchestrator
-        if: github.event.inputs.cash_loop_only != 'true'
+        if: env.CASH_LOOP_ONLY != 'true'
         env:
           GITHUB_TOKEN:       ${{ secrets.GITHUB_TOKEN }}
           AWS_REGION:         ${{ secrets.AWS_REGION || 'us-east-1' }}
@@ -251,7 +254,7 @@ jobs:
     needs: orchestrate
     if: |
       always() &&
-      github.event.inputs.cash_loop_only != 'true' &&
+      env.CASH_LOOP_ONLY != 'true' &&
       needs.orchestrate.result != 'cancelled'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -305,7 +308,7 @@ jobs:
     needs: compound
     if: |
       always() &&
-      github.event.inputs.cash_loop_only != 'true' &&
+      env.CASH_LOOP_ONLY != 'true' &&
       needs.compound.result != 'cancelled'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -349,7 +352,7 @@ jobs:
     needs: amplify
     if: |
       always() &&
-      github.event.inputs.cash_loop_only != 'true' &&
+      env.CASH_LOOP_ONLY != 'true' &&
       needs.amplify.result != 'cancelled'
     uses: ./.github/workflows/alw-allocator.yml
     secrets: inherit
@@ -362,7 +365,7 @@ jobs:
     needs: alw
     if: |
       always() &&
-      github.event.inputs.cash_loop_only != 'true'
+      env.CASH_LOOP_ONLY != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
