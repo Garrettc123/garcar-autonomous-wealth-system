@@ -57,8 +57,8 @@ jobs:
           AWS_SECRET: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           APOLLO_KEY: ${{ secrets.APOLLO_API_KEY }}
           SES_EMAIL: ${{ secrets.SES_SENDER_EMAIL }}
-          PROOF_URL: ${{ secrets.DASHBOARD_URL }}
-          PAYMENT_URL: ${{ secrets.UPGRADE_URL }}
+          DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
+          UPGRADE_URL: ${{ secrets.UPGRADE_URL }}
         run: |
           if [ -z "$AWS_KEY" ] || [ -z "$AWS_SECRET" ]; then
             echo "⚠️ AWS credentials not configured — skipping"
@@ -72,7 +72,7 @@ jobs:
             echo "⚠️ SES_SENDER_EMAIL not configured — skipping"
             exit 0
           fi
-          if [ -z "$PROOF_URL" ] || [ -z "$PAYMENT_URL" ]; then
+          if [ -z "$DASHBOARD_URL" ] || [ -z "$UPGRADE_URL" ]; then
             echo "⚠️ DASHBOARD_URL or UPGRADE_URL not configured — skipping"
             exit 0
           fi
