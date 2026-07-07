@@ -20,7 +20,7 @@ except ImportError:
 log = logging.getLogger("garcar.event_bus")
 
 
-def _utc_now() -> str:
+def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
@@ -35,7 +35,7 @@ class IntegrationEvent:
     metadata: Dict[str, Any] = field(default_factory=dict)
     status: str = "pending"
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    timestamp: str = field(default_factory=_utc_now)
+    timestamp: str = field(default_factory=utc_now)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -92,6 +92,7 @@ class IntegrationEventBus:
         self._redis: Optional[Any] = None
         self._buffer: List[Dict[str, Any]] = []
         self._dispatched: set[str] = set()
+        self._pending_tasks: set[asyncio.Task] = set()
         self._last_error: Optional[str] = None
         self._next_retry_at = 0.0
 
@@ -176,7 +177,7 @@ class IntegrationEventBus:
         status_entry = {
             "event_id": event_id,
             "dispatcher": dispatcher,
-            "timestamp": _utc_now(),
+            "timestamp": utc_now(),
             "result": result or {},
         }
         if redis is not None:
@@ -199,7 +200,7 @@ class IntegrationEventBus:
             "redis_connected": redis is not None,
             "stream": self.stream_name,
             "buffered_events": len(self._buffer),
-            "last_error": self._last_error,
+            "last_error_present": self._last_error is not None,
         }
 
     def _run_sync(self, coro, *, allow_background: bool = False):
@@ -209,8 +210,13 @@ class IntegrationEventBus:
             return asyncio.run(coro)
 
         if allow_background:
-            return loop.create_task(coro)
-        raise RuntimeError("Synchronous event bus read used inside a running event loop")
+            task = loop.create_task(coro)
+            self._pending_tasks.add(task)
+            task.add_done_callback(self._pending_tasks.discard)
+            return task
+        raise RuntimeError(
+            "Cannot call read_events_sync() from async context. Use await read_events() instead.",
+        )
 
     def publish_sync(self, event: Dict[str, Any]) -> Dict[str, Any]:
         self._run_sync(self.publish_event(event), allow_background=True)

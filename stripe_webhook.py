@@ -5,11 +5,10 @@ Deploy as a FastAPI route or AWS Lambda behind API Gateway.
 import json
 import os
 import stripe
-from datetime import datetime, timezone
 from typing import Dict
 
 from abundance_wallet import run as alw_run
-from core.event_bus import build_event, integration_event_bus
+from core.event_bus import build_event, integration_event_bus, utc_now
 
 stripe.api_key = os.environ.get('STRIPE_SECRET_KEY', '')
 WEBHOOK_SECRET = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
@@ -97,7 +96,12 @@ def _handle_revenue_event(event: Dict) -> Dict:
         correlation_id=event["id"],
         metadata={"provider": "stripe"},
     )
-    integration_event_bus.publish_sync(payment_event)
+    integration_event_status = 'published'
+    try:
+        integration_event_bus.publish_sync(payment_event)
+    except Exception as exc:  # noqa: BLE001
+        integration_event_status = 'publish_failed'
+        print(f'  Event bus publish failed for {payment_event["event_id"]}: {exc}')
 
     return {
         'status':         'processed',
@@ -107,7 +111,8 @@ def _handle_revenue_event(event: Dict) -> Dict:
         'customer_email': customer_email,
         'alw_total':      alw_dist.alw_total,
         'integration_event_id': payment_event['event_id'],
-        'timestamp':      datetime.now(timezone.utc).isoformat(),
+        'integration_event_status': integration_event_status,
+        'timestamp':      utc_now(),
     }
 
 

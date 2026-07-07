@@ -202,7 +202,7 @@ class MasterOrchestrator:
             capture_output=True, timeout=60
         ))
 
-    def run_fulfillment_dispatch(self):
+    def run_fulfillment(self):
         print("\n[3b/8] Fulfillment Dispatch")
         fulfillment_url = os.environ.get('FULFILLMENT_WEBHOOK_URL', '').strip()
         if not fulfillment_url:
@@ -220,35 +220,44 @@ class MasterOrchestrator:
             if not event_id or integration_event_bus.is_dispatched_sync(event_id):
                 continue
 
-            response = requests.post(
-                fulfillment_url,
-                json={"trigger": "payment.confirmed", "event": event},
-                timeout=10,
-            )
-            response.raise_for_status()
-
-            integration_event_bus.mark_dispatched_sync(
-                event_id,
-                dispatcher='fulfillment',
-                result={"status_code": response.status_code},
-            )
-            integration_event_bus.publish_sync(
-                build_event(
-                    "fulfillment.started",
-                    {
-                        "upstream_event_id": event_id,
-                        "fulfillment_url": fulfillment_url,
-                        "status_code": response.status_code,
-                    },
-                    source="garcar-autonomous-wealth-system/orchestrator",
-                    entity_type="fulfillment",
-                    entity_id=event.get('entity_id') or event_id,
-                    correlation_id=event_id,
-                    metadata={"dispatcher": "fulfillment"},
-                    status="dispatched",
+            try:
+                response = requests.post(
+                    fulfillment_url,
+                    json={"trigger": "payment.confirmed", "event": event},
+                    timeout=10,
                 )
-            )
-            dispatched += 1
+                response.raise_for_status()
+
+                integration_event_bus.mark_dispatched_sync(
+                    event_id,
+                    dispatcher='fulfillment',
+                    result={"status_code": response.status_code},
+                )
+                integration_event_bus.publish_sync(
+                    build_event(
+                        "fulfillment.started",
+                        {
+                            "upstream_event_id": event_id,
+                            "fulfillment_url": fulfillment_url,
+                            "status_code": response.status_code,
+                        },
+                        source="garcar-autonomous-wealth-system/orchestrator",
+                        entity_type="fulfillment",
+                        entity_id=event.get('entity_id') or event_id,
+                        correlation_id=event_id,
+                        metadata={"dispatcher": "fulfillment"},
+                        status="dispatched",
+                    )
+                )
+                dispatched += 1
+            except Exception as e:
+                print(f"  ❌ Fulfillment dispatch failed for {event_id}: {e}")
+                self.metrics['errors'].append({
+                    'step': 'fulfillment_dispatch',
+                    'event_id': event_id,
+                    'error': str(e),
+                    'ts': datetime.now(timezone.utc).isoformat(),
+                })
 
         self.metrics['fulfillment_dispatches'] += dispatched
         print(f"  ✅ Fulfillment dispatched: {dispatched}")
@@ -357,7 +366,7 @@ class MasterOrchestrator:
         leads = self.run_lead_pipeline()
         self.run_outreach(leads)
         self.run_revenue_processing()
-        self._run('fulfillment_dispatch', self.run_fulfillment_dispatch)
+        self._run('fulfillment_dispatch', self.run_fulfillment)
         self.run_agents()
         self.run_wealth_allocation()
         self.run_linear_sync()
