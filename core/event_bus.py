@@ -8,7 +8,7 @@ import time
 import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 try:
     import redis.asyncio as aioredis
@@ -98,8 +98,8 @@ class IntegrationEventBus:
         self.max_pending_tasks = self.DEFAULT_MAX_PENDING_TASKS
         self._redis: Optional[Any] = None
         self._buffer: List[Dict[str, Any]] = []
-        self._dispatched: set[str] = set()
-        self._pending_tasks: set[asyncio.Task] = set()
+        self._dispatched: Set[str] = set()
+        self._pending_tasks: Set[asyncio.Task] = set()
         self._last_error: Optional[str] = None
         self._next_retry_at = 0.0
 
@@ -210,7 +210,7 @@ class IntegrationEventBus:
             "last_error_present": self._last_error is not None,
         }
 
-    def _run_sync(self, coro, *, allow_background: bool = False):
+    def _run_sync(self, coro, *, allow_background: bool = False, method_name: str):
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -218,7 +218,6 @@ class IntegrationEventBus:
 
         if allow_background:
             if len(self._pending_tasks) >= self.max_pending_tasks:
-                coro.close()
                 raise RuntimeError("Too many pending event bus tasks")
             task = loop.create_task(coro)
             self._pending_tasks.add(task)
@@ -226,7 +225,7 @@ class IntegrationEventBus:
             task.add_done_callback(self._log_background_task_failure)
             return task
         raise RuntimeError(
-            "Cannot call sync event bus methods from async context. Use await instead.",
+            f"Cannot call {method_name}_sync from async context. Use await {method_name}() instead.",
         )
 
     @staticmethod
@@ -237,7 +236,11 @@ class IntegrationEventBus:
             log.warning("Background event bus task failed: %s", exc)
 
     def publish_sync(self, event: Dict[str, Any]) -> Dict[str, Any]:
-        self._run_sync(self.publish_event(event), allow_background=True)
+        self._run_sync(
+            self.publish_event(event),
+            allow_background=True,
+            method_name="publish_event",
+        )
         return event
 
     def read_events_sync(
@@ -246,10 +249,16 @@ class IntegrationEventBus:
         event_type: Optional[str] = None,
         count: int = 100,
     ) -> List[Dict[str, Any]]:
-        return self._run_sync(self.read_events(event_type=event_type, count=count))
+        return self._run_sync(
+            self.read_events(event_type=event_type, count=count),
+            method_name="read_events",
+        )
 
     def is_dispatched_sync(self, event_id: str) -> bool:
-        return self._run_sync(self.is_dispatched(event_id))
+        return self._run_sync(
+            self.is_dispatched(event_id),
+            method_name="is_dispatched",
+        )
 
     def mark_dispatched_sync(
         self,
@@ -260,10 +269,11 @@ class IntegrationEventBus:
     ) -> None:
         self._run_sync(
             self.mark_dispatched(event_id, dispatcher=dispatcher, result=result),
+            method_name="mark_dispatched",
         )
 
     def health_sync(self) -> Dict[str, Any]:
-        return self._run_sync(self.get_health())
+        return self._run_sync(self.get_health(), method_name="get_health")
 
 
 integration_event_bus = IntegrationEventBus()

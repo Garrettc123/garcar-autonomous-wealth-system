@@ -43,7 +43,11 @@ from typing import Dict, Any, List
 import requests
 
 from core.event_bus import build_event, integration_event_bus
-from secrets_manager import get as get_secret
+from secrets_manager import (
+    FULFILLMENT_WEBHOOK_SECRET_KEY,
+    FULFILLMENT_WEBHOOK_URL_KEY,
+    get as get_secret,
+)
 
 # ── Load all secrets from SSM before anything else ──────────────────────────
 try:
@@ -205,8 +209,8 @@ class MasterOrchestrator:
 
     def run_fulfillment(self):
         print("\n[3b/8] Fulfillment Dispatch")
-        fulfillment_url = (get_secret('FULFILLMENT_WEBHOOK_URL') or '').strip()
-        fulfillment_secret = (get_secret('FULFILLMENT_WEBHOOK_SECRET') or '').strip()
+        fulfillment_url = (get_secret(FULFILLMENT_WEBHOOK_URL_KEY) or '').strip()
+        fulfillment_secret = (get_secret(FULFILLMENT_WEBHOOK_SECRET_KEY) or '').strip()
         batch_size = int(os.environ.get('GARCAR_FULFILLMENT_BATCH_SIZE', '25'))
         timeout = float(os.environ.get('FULFILLMENT_WEBHOOK_TIMEOUT', '10'))
         if not fulfillment_url:
@@ -239,11 +243,6 @@ class MasterOrchestrator:
                 )
                 response.raise_for_status()
 
-                integration_event_bus.mark_dispatched_sync(
-                    event_id,
-                    dispatcher='fulfillment',
-                    result={"status_code": response.status_code},
-                )
                 integration_event_bus.publish_sync(
                     build_event(
                         "fulfillment.started",
@@ -259,6 +258,11 @@ class MasterOrchestrator:
                         metadata={"dispatcher": "fulfillment"},
                         status="dispatched",
                     )
+                )
+                integration_event_bus.mark_dispatched_sync(
+                    event_id,
+                    dispatcher='fulfillment',
+                    result={"status_code": response.status_code},
                 )
                 dispatched += 1
             except Exception as exc:
