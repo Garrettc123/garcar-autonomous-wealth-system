@@ -42,6 +42,9 @@ SECRET_REGISTRY: Dict[str, Optional[str]] = {
     "DASHBOARD_API_KEY":             "garcar/dashboard/api_key",
     "DASHBOARD_URL":                 None,
     "UPGRADE_URL":                   None,
+    # Fulfillment
+    "FULFILLMENT_WEBHOOK_URL":       "garcar/fulfillment/webhook_url",
+    "FULFILLMENT_WEBHOOK_SECRET":    "garcar/fulfillment/webhook_secret",
 }
 
 REQUIRED_SECRETS = [
@@ -53,6 +56,8 @@ REQUIRED_SECRETS = [
 ]
 
 AWS_SECRET_NAME = os.environ.get("AWS_SECRET_BUNDLE_NAME", "garcar/all")
+FULFILLMENT_WEBHOOK_URL_KEY = "FULFILLMENT_WEBHOOK_URL"
+FULFILLMENT_WEBHOOK_SECRET_KEY = "FULFILLMENT_WEBHOOK_SECRET"
 
 
 # ── Loader ───────────────────────────────────────────────────────────────────────

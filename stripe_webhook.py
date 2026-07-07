@@ -5,10 +5,10 @@ Deploy as a FastAPI route or AWS Lambda behind API Gateway.
 import json
 import os
 import stripe
-from datetime import datetime
 from typing import Dict
 
 from abundance_wallet import run as alw_run
+from core.event_bus import build_event, integration_event_bus, utc_now
 
 stripe.api_key = os.environ.get('STRIPE_SECRET_KEY', '')
 WEBHOOK_SECRET = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
@@ -76,6 +76,33 @@ def _handle_revenue_event(event: Dict) -> Dict:
         log=True,
     )
 
+    payment_event = build_event(
+        "payment.confirmed",
+        {
+            "stripe_event_id": event["id"],
+            "stripe_event_type": event["type"],
+            "amount_usd": amount,
+            "currency": obj.get("currency", "usd"),
+            "customer_email": customer_email,
+            "customer_id": obj.get("customer"),
+            "checkout_session_id": obj.get("id"),
+            "payment_intent_id": obj.get("payment_intent"),
+            "subscription_id": obj.get("subscription"),
+            "wallet_total": alw_dist.alw_total,
+        },
+        source="garcar-autonomous-wealth-system/stripe_webhook",
+        entity_type="payment",
+        entity_id=obj.get("payment_intent") or obj.get("id") or event["id"],
+        correlation_id=event["id"],
+        metadata={"provider": "stripe"},
+    )
+    integration_event_status = 'published'
+    try:
+        integration_event_bus.publish_sync(payment_event)
+    except Exception as exc:  # noqa: BLE001
+        integration_event_status = 'publish_failed'
+        print(f'  Event bus publish failed for {payment_event["event_id"]}: {exc}')
+
     return {
         'status':         'processed',
         'event_type':     event['type'],
@@ -83,7 +110,9 @@ def _handle_revenue_event(event: Dict) -> Dict:
         'amount':         amount,
         'customer_email': customer_email,
         'alw_total':      alw_dist.alw_total,
-        'timestamp':      datetime.utcnow().isoformat() + 'Z',
+        'integration_event_id': payment_event['event_id'],
+        'integration_event_status': integration_event_status,
+        'timestamp':      utc_now(),
     }
 
 

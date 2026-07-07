@@ -27,6 +27,7 @@ from core.rhns_engine import rhns
 from core.nwu_protocol import nwu
 from core.self_discovery_engine import SelfDiscoveryEngine
 from core.autonomous_revenue_loop import AutonomousRevenueLoop
+from core.event_bus import integration_event_bus
 
 log = logging.getLogger("api")
 
@@ -59,12 +60,14 @@ class LeadBatch(BaseModel):
 @app.get("/health")
 async def health():
     snapshot = await rhns.discover()
+    event_bus = await integration_event_bus.get_health()
     return {
         "status": "operational",
         "uptime": time.time(),
         "network_health": snapshot["network_health"],
         "active_nodes": snapshot["active_nodes"],
-        "total_revenue": revenue.summary["total_revenue"]
+        "total_revenue": revenue.summary["total_revenue"],
+        "event_bus": event_bus,
     }
 
 
@@ -113,6 +116,11 @@ async def get_capabilities():
                             key=lambda x: x.breakthrough_score, reverse=True)[:100]
         ]
     }
+
+
+@app.get("/event-bus")
+async def get_event_bus():
+    return await integration_event_bus.get_health()
 
 
 @app.on_event("startup")
