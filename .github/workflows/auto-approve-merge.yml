@@ -1,150 +1,33 @@
-name: "\u2705 Auto Approve & Merge All PRs"
-# Automatically approves and merges every non-draft PR.
-# Active for 5 weeks from deployment: 2026-03-19 through 2026-04-23.
-# After expiry the workflow exits cleanly without merging.
+name: Auto Approve & Merge
 
 on:
   pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
-  pull_request_review:
-    types: [submitted]
-  check_suite:
+    types: [opened, reopened, synchronize]
+  workflow_run:
+    workflows: ["*"]
     types: [completed]
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: 'Specific PR number to force-approve and merge (leave blank for all open PRs)'
-        required: false
-        default: ''
 
 permissions:
-  pull-requests: write
   contents: write
+  pull-requests: write
 
 jobs:
   auto-approve-merge:
-    name: Approve & Merge PR
     runs-on: ubuntu-latest
-
+    if: github.event.pull_request || github.event.workflow_run.conclusion == 'success'
     steps:
-      - name: Check 5-week approval window
-        id: window
-        run: |
-          EXPIRY="2026-04-23"
-          TODAY=$(date -u '+%Y-%m-%d')
-          if [[ "$TODAY" > "$EXPIRY" ]]; then
-            echo "expired=true" >> $GITHUB_OUTPUT
-            echo "Auto-approve window expired on $EXPIRY. Today is $TODAY. Exiting."
-          else
-            echo "expired=false" >> $GITHUB_OUTPUT
-            echo "Auto-approve window active. Expires: $EXPIRY. Today: $TODAY."
-          fi
+      - name: Approve PR
+        uses: hmarr/auto-approve-action@v3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Exit if window expired
-        if: steps.window.outputs.expired == 'true'
-        run: exit 0
-
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Check secrets
+      - name: Auto Merge PR
+        uses: pascalgn/automerge-action@v0.15.6
         env:
-          GH_TOKEN_VAL: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if [ -z "$GH_TOKEN_VAL" ]; then
-            echo "⚠️ GITHUB_TOKEN not configured — skipping"
-            exit 0
-          fi
-
-      - name: Approve and merge PRs
-        if: steps.window.outputs.expired == 'false'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO:     ${{ github.repository }}
-        run: |
-          SPECIFIC_PR="${{ github.event.inputs.pr_number }}"
-
-          # If triggered by a specific PR event, use that PR number
-          if [ -n "${{ github.event.pull_request.number }}" ]; then
-            SPECIFIC_PR="${{ github.event.pull_request.number }}"
-          fi
-
-          approve_and_merge() {
-            local PR=$1
-            echo "--- Processing PR #$PR ---"
-
-            # Get PR state
-            PR_DATA=$(gh pr view "$PR" --repo "$REPO" --json isDraft,state,mergeable,title 2>/dev/null)
-            if [ -z "$PR_DATA" ]; then
-              echo "  PR #$PR not found, skipping."
-              return
-            fi
-
-            IS_DRAFT=$(echo "$PR_DATA" | jq -r '.isDraft')
-            STATE=$(echo "$PR_DATA"    | jq -r '.state')
-            TITLE=$(echo "$PR_DATA"    | jq -r '.title')
-
-            echo "  Title: $TITLE"
-            echo "  State: $STATE | Draft: $IS_DRAFT"
-
-            if [ "$STATE" != "OPEN" ]; then
-              echo "  Not open. Skipping."
-              return
-            fi
-
-            if [ "$IS_DRAFT" = "true" ]; then
-              echo "  Marking ready for review..."
-              gh pr ready "$PR" --repo "$REPO" 2>/dev/null || true
-              sleep 3
-            fi
-
-            # Approve
-            echo "  Approving PR #$PR..."
-            gh pr review "$PR" --repo "$REPO" --approve \
-              --body "Auto-approved by Garcar autonomous system (5-week window active until 2026-04-23)." \
-              2>/dev/null || echo "  Already approved or cannot approve own PR."
-
-            # Wait briefly for checks
-            sleep 5
-
-            # Merge
-            echo "  Merging PR #$PR..."
-            gh pr merge "$PR" --repo "$REPO" --squash --delete-branch \
-              --subject "$TITLE" \
-              --body "Auto-merged by Garcar autonomous system." \
-              2>/dev/null && echo "  PR #$PR merged." || echo "  PR #$PR could not merge (checks pending or conflicts). Will retry on next trigger."
-          }
-
-          if [ -n "$SPECIFIC_PR" ]; then
-            approve_and_merge "$SPECIFIC_PR"
-          else
-            # Process all open PRs
-            OPEN=$(gh pr list --repo "$REPO" --state open --json number --jq '.[].number' 2>/dev/null || echo '')
-            if [ -z "$OPEN" ]; then
-              echo "No open PRs found."
-            else
-              for PR_NUM in $OPEN; do
-                approve_and_merge "$PR_NUM"
-                sleep 2
-              done
-            fi
-          fi
-
-      - name: Summary
-        if: steps.window.outputs.expired == 'false'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO:     ${{ github.repository }}
-        run: |
-          REMAINING=$(python3 -c "
-          from datetime import date
-          expiry = date(2026, 4, 23)
-          today = date.today()
-          days = (expiry - today).days
-          print(f'{days} days remaining in auto-approve window (expires 2026-04-23).')
-          ")
-          echo ""
-          echo "✅ Auto-approve cycle complete."
-          echo "   $REMAINING"
-          OPEN_COUNT=$(gh pr list --repo "$REPO" --state open --json number --jq 'length' 2>/dev/null || echo 'unknown')
-          echo "   Open PRs remaining: $OPEN_COUNT"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MERGE_LABELS: ""
+          MERGE_METHOD: squash
+          MERGE_DELETE_BRANCH: true
+          UPDATE_METHOD: rebase
+          MERGE_COMMIT_MESSAGE: "auto"
+          MERGE_RETRY_SLEEP: 5000
