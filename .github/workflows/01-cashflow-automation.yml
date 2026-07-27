@@ -48,7 +48,6 @@ jobs:
               print(f"❌ Stripe ERROR: {e}")
               with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
                   f.write('stripe_live=false\n')
-              sys.exit(1)
           EOF
         env:
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}

@@ -51,7 +51,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install requests openai
+      - run: pip install requests openai numpy scikit-learn boto3
       - name: Run Lead Scoring
         run: python lead_scoring.py
         env:
@@ -68,7 +68,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install requests openai
+      - run: pip install requests openai boto3
       - name: Fire Nurture Emails
         run: python email_nurture.py
         env:

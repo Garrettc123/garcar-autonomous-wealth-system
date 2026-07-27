@@ -5,6 +5,10 @@ on:
     - cron: '30 */4 * * *'   # Every 4 hours, offset from master
   workflow_dispatch:
 
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   watchdog:
     name: 🔍 Check Pipeline Health

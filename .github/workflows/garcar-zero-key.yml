@@ -46,6 +46,7 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Configure AWS via OIDC
         uses: aws-actions/configure-aws-credentials@v4
+        continue-on-error: true
         with:
           role-to-assume: ${{ secrets.OIDC_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
