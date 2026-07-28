@@ -72,8 +72,10 @@ jobs:
       - name: Fire Nurture Emails
         run: python email_nurture.py
         env:
-          AWS_REGION:       ${{ secrets.AWS_REGION || 'us-east-1' }}
-          SES_SENDER_EMAIL: ${{ secrets.SES_SENDER_EMAIL }}
+          AWS_REGION:            ${{ secrets.AWS_REGION || 'us-east-1' }}
+          AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          SES_SENDER_EMAIL:      ${{ secrets.SES_SENDER_EMAIL }}
           DASHBOARD_URL:    ${{ secrets.DASHBOARD_URL || 'https://app.garcar.io/dashboard' }}
           UPGRADE_URL:      ${{ secrets.UPGRADE_URL || 'https://app.garcar.io/upgrade' }}
           OPENAI_API_KEY:   ${{ secrets.OPENAI_API_KEY }}
