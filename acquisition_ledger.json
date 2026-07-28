@@ -1,1 +1,46 @@
-[]
+[
+  {
+    "email": "j.hartwell@dfwbuilders.com",
+    "name": "John Hartwell",
+    "company": "DFW Builders LLC",
+    "score": 47.5,
+    "contacted_at": "2026-07-28T13:20:40.421902Z",
+    "email_status": "sent",
+    "dry_run": true,
+    "stage": "outreach_sent",
+    "source": "demo"
+  },
+  {
+    "email": "b.cole@coleconstruction.io",
+    "name": "Brandon Cole",
+    "company": "Cole Construction",
+    "score": 47.5,
+    "contacted_at": "2026-07-28T13:20:40.722191Z",
+    "email_status": "sent",
+    "dry_run": true,
+    "stage": "outreach_sent",
+    "source": "demo"
+  },
+  {
+    "email": "m.reyes@texasgc.com",
+    "name": "Maria Reyes",
+    "company": "Texas GC Group",
+    "score": 46.2,
+    "contacted_at": "2026-07-28T13:20:41.022464Z",
+    "email_status": "sent",
+    "dry_run": true,
+    "stage": "outreach_sent",
+    "source": "demo"
+  },
+  {
+    "email": "t.monroe@monroegc.com",
+    "name": "Travis Monroe",
+    "company": "Monroe General Contracting",
+    "score": 46.2,
+    "contacted_at": "2026-07-28T13:20:41.322643Z",
+    "email_status": "sent",
+    "dry_run": true,
+    "stage": "outreach_sent",
+    "source": "demo"
+  }
+]

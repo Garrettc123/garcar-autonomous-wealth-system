@@ -189,6 +189,16 @@ def run_acquisition_loop(niche_config: Dict = DFW_CONTRACTOR_CONFIG) -> Dict:
     print(f"  Scraped:   {summary['raw_leads_scraped']} | Qualified: {summary['qualified_leads']}")
     print(f"  Rev Est:   ${summary['projected_revenue']:,.2f}")
     print(f"  ALW Fed:   {'Yes' if summary['alw_triggered'] else 'No'}")
+
+    # ── Hot Leads (score ≥ 80) ────────────────────────────────────────
+    hot_leads = [r for r in cycle_results if float(r.get('score', 0)) >= 80]
+    print(f"\n  🔥 HOT LEADS ({len(hot_leads)} contacts, score ≥ 80):")
+    if hot_leads:
+        for lead in hot_leads:
+            print(f"    🎯 {lead.get('name')} | {lead.get('company')} | Score: {lead.get('score')} | {lead.get('email')}")
+    else:
+        print("    None this cycle — try lowering MIN_LEAD_SCORE or broadening niche.")
+
     print(f"{'='*60}\n")
     return summary
 

@@ -68,15 +68,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install requests openai
+      - run: pip install boto3 requests openai
       - name: Fire Nurture Emails
         run: python email_nurture.py
         env:
-          SMTP_HOST: ${{ secrets.SMTP_HOST }}
-          SMTP_USER: ${{ secrets.SMTP_USER }}
-          SMTP_PASS: ${{ secrets.SMTP_PASS }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          AWS_REGION:       ${{ secrets.AWS_REGION || 'us-east-1' }}
+          SES_SENDER_EMAIL: ${{ secrets.SES_SENDER_EMAIL }}
+          DASHBOARD_URL:    ${{ secrets.DASHBOARD_URL || 'https://app.garcar.io/dashboard' }}
+          UPGRADE_URL:      ${{ secrets.UPGRADE_URL || 'https://app.garcar.io/upgrade' }}
+          OPENAI_API_KEY:   ${{ secrets.OPENAI_API_KEY }}
+          LINEAR_API_KEY:   ${{ secrets.LINEAR_API_KEY }}
 
   # ── CUSTOMER ACQUISITION LOOP ─────────────────────────────────────
   acquisition-loop:
@@ -111,7 +112,10 @@ jobs:
       - name: SMS Hot Leads
         run: python sms_outreach.py
         env:
-          TWILIO_SID: ${{ secrets.TWILIO_SID }}
-          TWILIO_TOKEN: ${{ secrets.TWILIO_TOKEN }}
-          TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
-          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN:  ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TWILIO_FROM_NUMBER: ${{ secrets.TWILIO_FROM_NUMBER }}
+          UPGRADE_URL:        ${{ secrets.UPGRADE_URL || 'https://app.garcar.io/upgrade' }}
+          TRIAL_URL:          ${{ secrets.TRIAL_URL || 'https://app.garcar.io/trial' }}
+          CALENDAR_URL:       ${{ secrets.CALENDAR_URL || 'https://cal.garcar.io/enterprise' }}
+          LINEAR_API_KEY:     ${{ secrets.LINEAR_API_KEY }}

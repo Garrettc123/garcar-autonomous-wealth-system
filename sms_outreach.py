@@ -147,3 +147,44 @@ class SMSOutreach:
             if result:
                 results.append(result)
         return results
+
+
+if __name__ == "__main__":
+    import json
+
+    HOT_LEAD_MIN_SCORE = float(os.environ.get('SMS_SCORE_THRESHOLD', '0.75'))
+    LEDGER_PATH = os.environ.get('ACQ_LEDGER_PATH', 'acquisition_ledger.json')
+
+    # Load leads from acquisition ledger
+    try:
+        with open(LEDGER_PATH) as f:
+            ledger = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        print(f"No ledger found at {LEDGER_PATH} — nothing to SMS.")
+        exit(0)
+
+    sms = SMSOutreach()
+    if not sms.client:
+        print("⚠️  Twilio not configured — SMS skipped (set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER).")
+        exit(0)
+
+    # Filter to recent leads that have a phone number and high score (score stored 0-100 in ledger)
+    hot_leads = [
+        r for r in ledger
+        if r.get('phone') and float(r.get('score', 0)) >= HOT_LEAD_MIN_SCORE * 100
+    ]
+
+    print(f"\n🔥 Hot Leads SMS Blast")
+    print(f"   Ledger entries: {len(ledger)}")
+    print(f"   Hot leads (score ≥ {HOT_LEAD_MIN_SCORE * 100:.0f}): {len(hot_leads)}")
+
+    sent = 0
+    for lead in hot_leads:
+        result = sms.outreach_high_value_lead(lead, float(lead.get('score', 0)) / 100)
+        if result and result.get('success'):
+            sent += 1
+            print(f"  ✅ SMS sent to {lead.get('name')} ({lead.get('company')}) — score {lead.get('score')}")
+        elif result:
+            print(f"  ❌ SMS failed for {lead.get('name')}: {result.get('error')}")
+
+    print(f"\n📱 SMS sent to {sent}/{len(hot_leads)} hot leads.")
