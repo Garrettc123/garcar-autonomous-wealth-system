@@ -4,6 +4,10 @@ on:
   push:
     branches: [ main ]
 
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   test-and-deploy:
     runs-on: ubuntu-latest
@@ -30,11 +34,23 @@ jobs:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
           npm install -g @railway/cli
-          railway up --detach
+          railway up
 
       - name: Health check
+        env:
+          RAILWAY_APP_URL: ${{ secrets.RAILWAY_APP_URL }}
         run: |
-          curl -f https://your-app.up.railway.app/health
+          APP_URL="${RAILWAY_APP_URL:-https://your-app.up.railway.app}"
+          for i in 1 2 3 4 5; do
+            if curl -sf "${APP_URL}/health"; then
+              echo "✅ Health check passed"
+              exit 0
+            fi
+            echo "Attempt $i failed, retrying in 15s..."
+            sleep 15
+          done
+          echo "❌ Health check failed after 5 attempts"
+          exit 1
 
       - name: Update Notion deployment status
         if: success()

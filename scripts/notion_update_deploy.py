@@ -33,7 +33,7 @@ def update_deploy_status(status: str) -> None:
     repo = os.environ.get("GITHUB_REPOSITORY", "unknown/repo")
     sha = os.environ.get("GITHUB_SHA", "unknown")
     ref = os.environ.get("GITHUB_REF_NAME", "main")
-    now = datetime.datetime.utcnow().isoformat() + "Z"
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     payload = {
         "parent": {"database_id": NOTION_DEPLOY_DB_ID},

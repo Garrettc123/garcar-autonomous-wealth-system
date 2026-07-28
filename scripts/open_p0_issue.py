@@ -28,7 +28,7 @@ def open_p0_issue(title: str) -> None:
     ref = os.environ.get("GITHUB_REF_NAME", "main")
     run_id = os.environ.get("GITHUB_RUN_ID", "")
     workflow = os.environ.get("GITHUB_WORKFLOW", "unknown workflow")
-    now = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     run_url = (
         f"https://github.com/{GITHUB_REPOSITORY}/actions/runs/{run_id}"
