@@ -21,6 +21,7 @@ REV_PER_CLOSE    = float(os.environ.get("REVENUE_PER_CLOSE", "499"))
 CONVERSION_RATE  = float(os.environ.get("ESTIMATED_CONVERSION_RATE", "0.05"))
 LEDGER_PATH      = os.environ.get("ACQ_LEDGER_PATH", "acquisition_ledger.json")
 DRY_RUN          = os.environ.get("DRY_RUN", "false").lower() == "true"  # FIXED: now respected
+VERBOSE_LEADS    = os.environ.get("VERBOSE_LEADS", "false").lower() == "true"
 
 # DFW General Contractor targeting (primary niche)
 DFW_CONTRACTOR_CONFIG = {
@@ -193,11 +194,10 @@ def run_acquisition_loop(niche_config: Dict = DFW_CONTRACTOR_CONFIG) -> Dict:
 
     # ── Hot Leads (score ≥ 80) ────────────────────────────────────────
     hot_leads = [r for r in cycle_results if float(r.get('score', 0)) >= 80]
-    verbose = os.environ.get("VERBOSE_LEADS", "false").lower() == "true"
     print(f"\n  🔥 HOT LEADS ({len(hot_leads)} contacts, score ≥ 80):")
     if hot_leads:
         for lead in hot_leads:
-            if verbose:
+            if VERBOSE_LEADS:
                 print(f"    🎯 {lead.get('name')} | {lead.get('company')} | Score: {lead.get('score')} | {lead.get('email')}")
             else:
                 print(f"    🎯 {lead.get('company')} | Score: {lead.get('score')}")
