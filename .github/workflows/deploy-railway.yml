@@ -11,6 +11,7 @@ permissions:
 jobs:
   test-and-deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -67,4 +68,4 @@ jobs:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
           python scripts/open_p0_issue.py "Deploy failed on main"
-          railway rollback
+          railway rollback || echo "⚠️ Rollback command failed — manual intervention may be required"
