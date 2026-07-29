@@ -127,7 +127,7 @@ def main() -> int:
         if not run_id:
             continue
         run_path = str(run.get("path") or "")
-        if run_path == self_workflow_path:
+        if run_path.startswith(self_workflow_path):
             continue
 
         name = str(run.get("name") or "unknown")
@@ -139,7 +139,7 @@ def main() -> int:
 
         if created_at and created_at < oldest:
             continue
-        if attempt >= max_retry_attempts:
+        if attempt > max_retry_attempts:
             continue
 
         if status == "in_progress":
@@ -153,13 +153,13 @@ def main() -> int:
 
                     run_completed = False
                     for poll_index in range(6):
+                        if poll_index > 0:
+                            time.sleep(10)
                         latest = api.get_run(run_id)
                         latest_status = str((latest or {}).get("status") or "")
                         if latest_status == "completed":
                             run_completed = True
                             break
-                        if poll_index < 5:
-                            time.sleep(10)
 
                     if not run_completed:
                         unresolved.append(
