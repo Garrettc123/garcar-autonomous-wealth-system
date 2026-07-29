@@ -21,6 +21,14 @@ FAIL_CONCLUSIONS = {
 }
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, str(default))
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -98,10 +106,10 @@ def main() -> int:
         print("⚠️ GITHUB_TOKEN or GITHUB_REPOSITORY missing; skipping self-heal.")
         return 0
 
-    lookback_hours = int(os.environ.get("LOOKBACK_HOURS", "24"))
-    stall_threshold_minutes = int(os.environ.get("STALL_THRESHOLD_MINUTES", "60"))
-    max_retry_attempts = int(os.environ.get("MAX_RETRY_ATTEMPTS", "3"))
-    max_runs = int(os.environ.get("MAX_RUNS", "100"))
+    lookback_hours = _env_int("LOOKBACK_HOURS", 24)
+    stall_threshold_minutes = _env_int("STALL_THRESHOLD_MINUTES", 60)
+    max_retry_attempts = _env_int("MAX_RETRY_ATTEMPTS", 3)
+    max_runs = _env_int("MAX_RUNS", 100)
     self_workflow_file = os.environ.get("SELF_WORKFLOW_FILE", "actions-self-heal-agent.yml")
 
     oldest = _now_utc() - timedelta(hours=max(1, lookback_hours))
@@ -131,23 +139,24 @@ def main() -> int:
         if attempt > max_retry_attempts:
             continue
 
-        if status == "in_progress" and updated_at:
-            age_minutes = (_now_utc() - updated_at).total_seconds() / 60.0
-            if age_minutes > stall_threshold_minutes:
-                cancelled = api.cancel_run(run_id)
-                reran = False
-                if cancelled:
-                    for _ in range(6):
-                        latest = api.get_run(run_id)
-                        latest_status = str((latest or {}).get("status") or "")
-                        if latest_status == "completed":
-                            reran = api.rerun(run_id)
-                            break
-                        time.sleep(10)
-                if cancelled and reran:
-                    healed.append(f"{name}#{run_id}: cancelled stalled run and reran")
-                else:
-                    unresolved.append(f"{name}#{run_id}: stalled, cancel/rerun failed")
+        if status == "in_progress":
+            if updated_at:
+                age_minutes = (_now_utc() - updated_at).total_seconds() / 60.0
+                if age_minutes > stall_threshold_minutes:
+                    cancelled = api.cancel_run(run_id)
+                    reran = False
+                    if cancelled:
+                        for _ in range(6):
+                            latest = api.get_run(run_id)
+                            latest_status = str((latest or {}).get("status") or "")
+                            if latest_status == "completed":
+                                reran = api.rerun(run_id)
+                                break
+                            time.sleep(10)
+                    if cancelled and reran:
+                        healed.append(f"{name}#{run_id}: cancelled stalled run and reran")
+                    else:
+                        unresolved.append(f"{name}#{run_id}: stalled, cancel/rerun failed")
             continue
 
         if status == "completed" and conclusion in FAIL_CONCLUSIONS:
