@@ -1,0 +1,66 @@
+name: 🤖 Actions Self-Heal Agent
+
+on:
+  schedule:
+    - cron: '15 * * * *'
+  workflow_dispatch:
+    inputs:
+      lookback_hours:
+        description: 'How many hours of workflow runs to scan'
+        required: false
+        default: '24'
+      stall_threshold_minutes:
+        description: 'Minutes before in-progress runs are considered stalled'
+        required: false
+        default: '60'
+      max_retry_attempts:
+        description: 'Maximum run_attempt count eligible for auto-rerun'
+        required: false
+        default: '3'
+  workflow_call:
+    inputs:
+      lookback_hours:
+        required: false
+        type: string
+        default: '24'
+      stall_threshold_minutes:
+        required: false
+        type: string
+        default: '60'
+      max_retry_attempts:
+        required: false
+        type: string
+        default: '3'
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: actions-self-heal-agent
+  cancel-in-progress: false
+
+jobs:
+  self-heal:
+    name: Scan, repropagate, self-heal failed actions
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run actions self-heal agent
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          LOOKBACK_HOURS: ${{ inputs.lookback_hours || github.event.inputs.lookback_hours || '24' }}
+          STALL_THRESHOLD_MINUTES: ${{ inputs.stall_threshold_minutes || github.event.inputs.stall_threshold_minutes || '60' }}
+          MAX_RETRY_ATTEMPTS: ${{ inputs.max_retry_attempts || github.event.inputs.max_retry_attempts || '3' }}
+          MAX_RUNS: '100'
+          SELF_WORKFLOW_PATH: '.github/workflows/actions-self-heal-agent.yml'
+        run: python scripts/actions_self_heal_agent.py
