@@ -38,7 +38,7 @@ permissions:
 
 concurrency:
   group: actions-self-heal-agent
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   self-heal:

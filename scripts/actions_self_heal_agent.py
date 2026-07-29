@@ -144,23 +144,38 @@ def main() -> int:
                 age_minutes = (_now_utc() - updated_at).total_seconds() / 60.0
                 if age_minutes > stall_threshold_minutes:
                     cancelled = api.cancel_run(run_id)
-                    reran = False
-                    if cancelled:
-                        for _ in range(6):
-                            latest = api.get_run(run_id)
-                            latest_status = str((latest or {}).get("status") or "")
-                            if latest_status == "completed":
-                                reran = api.rerun(run_id)
-                                break
-                            time.sleep(10)
-                    if cancelled and reran:
+                    if not cancelled:
+                        unresolved.append(f"{name}#{run_id}: stalled, cancel request failed")
+                        continue
+
+                    run_completed = False
+                    for _ in range(6):
+                        latest = api.get_run(run_id)
+                        latest_status = str((latest or {}).get("status") or "")
+                        if latest_status == "completed":
+                            run_completed = True
+                            break
+                        time.sleep(10)
+
+                    if not run_completed:
+                        unresolved.append(
+                            f"{name}#{run_id}: cancelled stalled run, timed out waiting to rerun"
+                        )
+                        continue
+
+                    reran = api.rerun(run_id)
+                    if reran:
                         healed.append(f"{name}#{run_id}: cancelled stalled run and reran")
                     else:
-                        unresolved.append(f"{name}#{run_id}: stalled, cancel/rerun failed")
+                        unresolved.append(
+                            f"{name}#{run_id}: cancelled stalled run, rerun request failed"
+                        )
             continue
 
         if status == "completed" and conclusion in FAIL_CONCLUSIONS:
-            retried = api.rerun_failed_jobs(run_id) or api.rerun(run_id)
+            retried = api.rerun_failed_jobs(run_id)
+            if not retried:
+                retried = api.rerun(run_id)
             if retried:
                 healed.append(f"{name}#{run_id}: failure auto-rerun requested")
             else:
