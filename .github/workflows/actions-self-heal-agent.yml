@@ -62,5 +62,5 @@ jobs:
           STALL_THRESHOLD_MINUTES: ${{ inputs.stall_threshold_minutes || github.event.inputs.stall_threshold_minutes || '60' }}
           MAX_RETRY_ATTEMPTS: ${{ inputs.max_retry_attempts || github.event.inputs.max_retry_attempts || '3' }}
           MAX_RUNS: '100'
-          SELF_WORKFLOW_FILE: 'actions-self-heal-agent.yml'
+          SELF_WORKFLOW_PATH: '.github/workflows/actions-self-heal-agent.yml'
         run: python scripts/actions_self_heal_agent.py

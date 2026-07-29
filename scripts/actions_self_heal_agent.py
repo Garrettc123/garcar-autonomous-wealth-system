@@ -110,7 +110,10 @@ def main() -> int:
     stall_threshold_minutes = _env_int("STALL_THRESHOLD_MINUTES", 60)
     max_retry_attempts = _env_int("MAX_RETRY_ATTEMPTS", 3)
     max_runs = _env_int("MAX_RUNS", 100)
-    self_workflow_file = os.environ.get("SELF_WORKFLOW_FILE", "actions-self-heal-agent.yml")
+    self_workflow_path = os.environ.get(
+        "SELF_WORKFLOW_PATH",
+        ".github/workflows/actions-self-heal-agent.yml",
+    )
 
     oldest = _now_utc() - timedelta(hours=max(1, lookback_hours))
     api = GitHubApi(token, repository)
@@ -124,7 +127,7 @@ def main() -> int:
         if not run_id:
             continue
         run_path = str(run.get("path") or "")
-        if run_path.endswith(self_workflow_file):
+        if run_path == self_workflow_path:
             continue
 
         name = str(run.get("name") or "unknown")
@@ -136,7 +139,7 @@ def main() -> int:
 
         if created_at and created_at < oldest:
             continue
-        if attempt > max_retry_attempts:
+        if attempt >= max_retry_attempts:
             continue
 
         if status == "in_progress":
@@ -149,13 +152,14 @@ def main() -> int:
                         continue
 
                     run_completed = False
-                    for _ in range(6):
+                    for poll_index in range(6):
                         latest = api.get_run(run_id)
                         latest_status = str((latest or {}).get("status") or "")
                         if latest_status == "completed":
                             run_completed = True
                             break
-                        time.sleep(10)
+                        if poll_index < 5:
+                            time.sleep(10)
 
                     if not run_completed:
                         unresolved.append(
