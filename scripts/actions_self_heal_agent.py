@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib import error, parse, request
@@ -75,6 +76,12 @@ class GitHubApi:
         status, _ = self._request("POST", f"/actions/runs/{run_id}/cancel")
         return status in (202, 409)
 
+    def get_run(self, run_id: int) -> dict[str, Any] | None:
+        status, body = self._request("GET", f"/actions/runs/{run_id}")
+        if status == 200 and isinstance(body, dict):
+            return body
+        return None
+
     def rerun_failed_jobs(self, run_id: int) -> bool:
         status, _ = self._request("POST", f"/actions/runs/{run_id}/rerun-failed-jobs")
         return status in (201, 202)
@@ -121,14 +128,22 @@ def main() -> int:
 
         if created_at and created_at < oldest:
             continue
-        if attempt >= max_retry_attempts:
+        if attempt > max_retry_attempts:
             continue
 
         if status == "in_progress" and updated_at:
             age_minutes = (_now_utc() - updated_at).total_seconds() / 60.0
             if age_minutes > stall_threshold_minutes:
                 cancelled = api.cancel_run(run_id)
-                reran = api.rerun(run_id) if cancelled else False
+                reran = False
+                if cancelled:
+                    for _ in range(6):
+                        latest = api.get_run(run_id)
+                        latest_status = str((latest or {}).get("status") or "")
+                        if latest_status == "completed":
+                            reran = api.rerun(run_id)
+                            break
+                        time.sleep(10)
                 if cancelled and reran:
                     healed.append(f"{name}#{run_id}: cancelled stalled run and reran")
                 else:
