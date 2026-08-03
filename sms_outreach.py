@@ -150,6 +150,7 @@ class SMSOutreach:
 
 
 if __name__ == "__main__":
+    import sys
     import json
 
     HOT_LEAD_MIN_SCORE = float(os.environ.get('SMS_SCORE_THRESHOLD', '0.75'))
@@ -161,12 +162,12 @@ if __name__ == "__main__":
             ledger = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         print(f"No ledger found at {LEDGER_PATH} — nothing to SMS.")
-        exit(0)
+        sys.exit(0)
 
     sms = SMSOutreach()
     if not sms.client:
         print("⚠️  Twilio not configured — SMS skipped (set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER).")
-        exit(0)
+        sys.exit(0)
 
     # Filter to recent leads that have a phone number and high score (score stored 0-100 in ledger)
     hot_leads = [

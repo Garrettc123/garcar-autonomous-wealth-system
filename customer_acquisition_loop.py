@@ -21,6 +21,7 @@ REV_PER_CLOSE    = float(os.environ.get("REVENUE_PER_CLOSE", "499"))
 CONVERSION_RATE  = float(os.environ.get("ESTIMATED_CONVERSION_RATE", "0.05"))
 LEDGER_PATH      = os.environ.get("ACQ_LEDGER_PATH", "acquisition_ledger.json")
 DRY_RUN          = os.environ.get("DRY_RUN", "false").lower() == "true"  # FIXED: now respected
+VERBOSE_LEADS    = os.environ.get("VERBOSE_LEADS", "false").lower() == "true"
 
 # DFW General Contractor targeting (primary niche)
 DFW_CONTRACTOR_CONFIG = {
@@ -104,6 +105,7 @@ def send_outreach(leads: List[Dict]) -> List[Dict]:
             "email":        lead.get("email"),
             "name":         lead.get("name"),
             "company":      lead.get("company"),
+            "phone":        lead.get("phone"),
             "score":        lead.get("score", 0),
             "contacted_at": datetime.utcnow().isoformat() + "Z",
             "email_status": "sent" if result.get("success") else "failed",
@@ -195,7 +197,10 @@ def run_acquisition_loop(niche_config: Dict = DFW_CONTRACTOR_CONFIG) -> Dict:
     print(f"\n  🔥 HOT LEADS ({len(hot_leads)} contacts, score ≥ 80):")
     if hot_leads:
         for lead in hot_leads:
-            print(f"    🎯 {lead.get('name')} | {lead.get('company')} | Score: {lead.get('score')} | {lead.get('email')}")
+            if VERBOSE_LEADS:
+                print(f"    🎯 {lead.get('name')} | {lead.get('company')} | Score: {lead.get('score')} | {lead.get('email')}")
+            else:
+                print(f"    🎯 {lead.get('company')} | Score: {lead.get('score')}")
     else:
         print("    None this cycle — try lowering MIN_LEAD_SCORE or broadening niche.")
 
