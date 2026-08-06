@@ -34,13 +34,22 @@ jobs:
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
+          if [ -z "${RAILWAY_TOKEN}" ]; then
+            echo "⚠️  RAILWAY_TOKEN is not set — skipping Railway deploy"
+            exit 0
+          fi
           npm install -g @railway/cli
           railway up
 
       - name: Health check
         env:
           RAILWAY_APP_URL: ${{ secrets.RAILWAY_APP_URL }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
+          if [ -z "${RAILWAY_TOKEN}" ]; then
+            echo "⚠️  RAILWAY_TOKEN not set — skipping health check"
+            exit 0
+          fi
           APP_URL="${RAILWAY_APP_URL:-https://your-app.up.railway.app}"
           for i in 1 2 3 4 5; do
             if curl -sf "${APP_URL}/health"; then
@@ -68,4 +77,9 @@ jobs:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
           python scripts/open_p0_issue.py "Deploy failed on main"
-          railway rollback || echo "⚠️ Rollback command failed — manual intervention may be required"
+          if [ -n "${RAILWAY_TOKEN}" ]; then
+            npm install -g @railway/cli 2>/dev/null || true
+            railway redeploy --yes 2>/dev/null || echo "⚠️  Railway redeploy failed — manual rollback may be required"
+          else
+            echo "⚠️  RAILWAY_TOKEN not set — skipping Railway rollback"
+          fi
