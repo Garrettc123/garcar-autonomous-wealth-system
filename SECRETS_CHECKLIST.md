@@ -1,6 +1,10 @@
 # 🔐 Garcar Enterprise — Auto Key Checklist
 
-> Run `python setup_secrets.py` to auto-provision all secrets from your `.env` into GitHub Actions.
+> **Authoritative list of every secret name:** [SECRETS.md](./SECRETS.md)
+>
+> Vault: https://github.com/Garrettc123/garcar-autonomous-wealth-system/settings/secrets/actions
+
+Run `python setup_secrets.py` to auto-provision secrets from your `.env` into GitHub Actions.
 
 ## Quick Start
 
@@ -28,83 +32,76 @@ python setup_secrets.py
 |--------|-------|
 | `STRIPE_SECRET_KEY` | [Stripe Dashboard → Developers → API Keys](https://dashboard.stripe.com/apikeys) |
 | `STRIPE_PUBLISHABLE_KEY` | Same page |
-| `STRIPE_WEBHOOK_SECRET` | [Stripe → Webhooks → your endpoint → Signing secret](https://dashboard.stripe.com/webhooks) |
-| `STRIPE_PRICE_BASIC/PRO/ENTERPRISE` | [Stripe → Products → your product → Price ID](https://dashboard.stripe.com/products) |
+| `STRIPE_WEBHOOK_SECRET` | [Stripe → Webhooks → Signing secret](https://dashboard.stripe.com/webhooks) |
+| `STRIPE_PRICE_BASIC` / `PRO` / `ENTERPRISE` | [Stripe → Products](https://dashboard.stripe.com/products) |
 
-### 📋 Linear (All Workflows)
+### 📋 Linear
 | Secret | Where |
 |--------|-------|
-| `LINEAR_API_KEY` | [Linear → Settings → API → Personal API Keys](https://linear.app/settings/api) |
-| `LINEAR_TEAM_ID` | Linear URL: `linear.app/[team-name]` — or Settings → General |
+| `LINEAR_API_KEY` | [Linear → Settings → API](https://linear.app/settings/api) |
+| `LINEAR_TEAM_ID` | Team settings / URL |
 
-### 🤖 OpenAI (Lead Gen + Orchestrator)
+### 🤖 OpenAI
 | Secret | Where |
 |--------|-------|
 | `OPENAI_API_KEY` | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
 
-### 🔍 Apollo.io (Lead Gen)
+### 🔍 Apollo.io
 | Secret | Where |
 |--------|-------|
-| `APOLLO_API_KEY` | [Apollo → Settings → Integrations → API](https://app.apollo.io/#/settings/integrations/api) |
+| `APOLLO_API_KEY` | [Apollo → Integrations → API](https://app.apollo.io/#/settings/integrations/api) |
 
-### 📧 Email / SMTP
+### 📧 Email / SMTP / SES
 | Secret | Where |
 |--------|-------|
-| `SMTP_HOST` | Your provider (e.g. `smtp.gmail.com`, `smtp.sendgrid.net`) |
-| `SMTP_USER` | Your sender email |
-| `SMTP_PASS` | App password (Gmail) or SendGrid API key |
+| `SMTP_HOST` / `SMTP_USER` / `SMTP_PASS` | Provider (Gmail app password, SendGrid, etc.) |
+| `SES_SENDER_EMAIL` | Verified identity in AWS SES |
 
-> **Gmail users:** Enable 2FA → [Create App Password](https://myaccount.google.com/apppasswords). Use that as `SMTP_PASS`.
-
-### 📱 Twilio (SMS Outreach)
+### 📱 Twilio (exact names used by workflows)
 | Secret | Where |
 |--------|-------|
-| `TWILIO_SID` | [Twilio Console → Account Info](https://console.twilio.com) |
-| `TWILIO_TOKEN` | Same page |
-| `TWILIO_FROM` | Twilio → Phone Numbers → your number |
+| `TWILIO_ACCOUNT_SID` | [Twilio Console](https://console.twilio.com) |
+| `TWILIO_AUTH_TOKEN` | Same |
+| `TWILIO_FROM_NUMBER` | Twilio phone numbers |
 
-### 📚 Notion (Delivery + Revenue Reports)
+### 📚 Notion
 | Secret | Where |
 |--------|-------|
-| `NOTION_TOKEN` | [Notion → Settings → Connections → Develop or manage integrations](https://www.notion.so/my-integrations) |
+| `NOTION_TOKEN` | [Notion integrations](https://www.notion.so/my-integrations) |
 
-### ⚡ Redis (Dashboard Sync)
+### ⚡ Redis / Railway
 | Secret | Where |
 |--------|-------|
-| `REDIS_URL` | [Railway → your Redis service → Connect → copy `REDIS_URL`](https://railway.app) |
+| `REDIS_URL` | Railway Redis → Connect |
+| `RAILWAY_TOKEN` | [Railway tokens](https://railway.app/account/tokens) |
+| `RAILWAY_APP_URL` | Service public URL |
 
-### 🚂 Railway (Webhook Server)
+### 💙 HubSpot
 | Secret | Where |
 |--------|-------|
-| `RAILWAY_TOKEN` | [Railway → Account Settings → Tokens](https://railway.app/account/tokens) |
+| `HUBSPOT_API_KEY` | HubSpot private apps |
 
-### 💙 HubSpot (Lead Scoring)
+### 🔑 GitHub PAT (cross-repo)
 | Secret | Where |
 |--------|-------|
-| `HUBSPOT_API_KEY` | [HubSpot → Settings → Account Setup → Integrations → Private Apps](https://app.hubspot.com/developer-docs/api) |
+| `GH_PAT` | Fine-grained PAT: `repo`, `workflow` |
 
-### 🔑 GitHub PAT (Cross-repo Triggers)
-| Secret | Where |
-|--------|-------|
-| `GH_PAT` | [GitHub → Settings → Developer settings → Personal access tokens → Fine-grained](https://github.com/settings/tokens) |
-
-> Required scopes: `repo`, `workflow`, `admin:repo_hook`
-
----
-
-## AWS (Optional — for S3 + Lambda features)
+### AWS (prefer OIDC)
 ```
-AWS_ACCESS_KEY_ID     → AWS Console → IAM → Users → your user → Security credentials
-AWS_SECRET_ACCESS_KEY → Same page
-AWS_REGION            → us-east-1 (or your region)
+OIDC_ROLE_ARN           → preferred long-term
+AWS_ACCESS_KEY_ID       → bootstrap only, then delete
+AWS_SECRET_ACCESS_KEY   → bootstrap only, then delete
+AWS_REGION / AWS_ACCOUNT_ID / S3_BUCKET / LAMBDA_EXECUTION_ROLE_ARN / KMS_KEY_ID
 ```
 
 ---
 
 ## ✅ Readiness Check
 
-After running `setup_secrets.py`, visit:
-- **Secrets**: https://github.com/Garrettc123/garcar-autonomous-wealth-system/settings/secrets/actions
-- **Actions**: https://github.com/Garrettc123/garcar-autonomous-wealth-system/actions
+After provisioning:
 
-All 5 workflows arm the moment their required secrets are present.
+- **Secrets**: https://github.com/Garrettc123/garcar-autonomous-wealth-system/settings/secrets/actions  
+- **Actions**: https://github.com/Garrettc123/garcar-autonomous-wealth-system/actions  
+- **Canonical names**: [SECRETS.md](./SECRETS.md)
+
+Cron workflows arm as soon as their required secrets exist.
