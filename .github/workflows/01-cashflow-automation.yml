@@ -38,7 +38,13 @@ jobs:
         run: |
           python - <<'EOF'
           import stripe, os, sys
-          stripe.api_key = os.environ['STRIPE_SECRET_KEY']
+          stripe_key = os.environ.get('STRIPE_SECRET_KEY', '').strip()
+          if not stripe_key:
+              print("⚠️ Stripe secret not configured — skipping connectivity check")
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                  f.write('stripe_live=false\n')
+              sys.exit(0)
+          stripe.api_key = stripe_key
           try:
               acct = stripe.Account.retrieve()
               print(f"✅ Stripe LIVE: {acct.id}")
