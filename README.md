@@ -135,6 +135,7 @@ UPGRADE_URL
    - Apollo searches for 100 qualified B2B prospects
    - Filters: CEO/CTO/VP titles, 50-500 employees, tech companies
    - Stores in S3, logs in Linear
+   - Operational enriched prospect/contact/persona records are maintained in CRM (not tracked in repository issues or code)
 
 2. **Revenue Processing** (revenue_agent.js)
    - Processes first 10-20 leads
