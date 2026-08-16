@@ -80,8 +80,9 @@ jobs:
     needs: ip-timestamp
     steps:
       - uses: actions/checkout@v4
+        continue-on-error: true
         with:
-          token: ${{ secrets.GH_PAT }}
+          token: ${{ secrets.GH_PAT || github.token }}
 
       - name: Push Architecture Update to RHNS-Architecture
         run: |
