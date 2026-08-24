@@ -45,11 +45,25 @@ jobs:
       # 2. Authenticate to AWS via OIDC (NO static keys ever)
       # -----------------------------------------------------------------------
       - name: Configure AWS via OIDC
+        if: ${{ secrets.OIDC_ROLE_ARN != '' }}
+        continue-on-error: true
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.OIDC_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
           role-session-name: garcar-zero-key-${{ github.run_id }}
+
+      - name: Check AWS credential availability
+        id: aws_creds
+        shell: bash
+        run: |
+          if [ -n "${AWS_ACCESS_KEY_ID}" ] && [ -n "${AWS_SECRET_ACCESS_KEY}" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "AWS credentials available via OIDC."
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "AWS credentials unavailable; skipping provisioner steps gracefully."
+          fi
 
       # -----------------------------------------------------------------------
       # 3. Install Python deps
@@ -61,7 +75,7 @@ jobs:
       # 4. (Optional) Set a new key from workflow_dispatch input
       # -----------------------------------------------------------------------
       - name: Set key from dispatch input
-        if: ${{ github.event.inputs.set_key != '' }}
+        if: ${{ steps.aws_creds.outputs.ready == 'true' && github.event.inputs.set_key != '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -73,11 +87,16 @@ jobs:
       # 5. Run full provisioner (load SSM → provision infra → sync to GitHub)
       # -----------------------------------------------------------------------
       - name: Run Zero-Touch Provisioner
+        if: ${{ steps.aws_creds.outputs.ready == 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
         run: python secrets_provisioner.py
+
+      - name: Skip notice
+        if: ${{ steps.aws_creds.outputs.ready != 'true' }}
+        run: echo "Skipping zero-key provision run because AWS OIDC credentials are not configured."
 
       # -----------------------------------------------------------------------
       # 6. Report result
