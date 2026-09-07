@@ -45,11 +45,22 @@ jobs:
       # 2. Authenticate to AWS via OIDC (NO static keys ever)
       # -----------------------------------------------------------------------
       - name: Configure AWS via OIDC
+        id: oidc-auth
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.OIDC_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
           role-session-name: garcar-zero-key-${{ github.run_id }}
+        continue-on-error: true
+
+      - name: Fallback — Static creds (first-run bootstrap only)
+        if: ${{ steps.oidc-auth.outcome == 'failure' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+        continue-on-error: true
 
       # -----------------------------------------------------------------------
       # 3. Install Python deps
