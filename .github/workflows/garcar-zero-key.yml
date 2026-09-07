@@ -23,6 +23,10 @@ on:
         description: 'Set a key (format: KEY=value). Leave blank to just re-sync.'
         required: false
         default: ''
+      allow_static_fallback:
+        description: 'Temporarily allow static AWS bootstrap credentials if OIDC fails.'
+        required: false
+        default: 'false'
 
 permissions:
   id-token: write   # Required for OIDC
@@ -33,6 +37,8 @@ jobs:
     name: Zero-Key Provision & Self-Heal
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      STATIC_AWS_BOOTSTRAP_ENABLED: ${{ secrets.ENABLE_STATIC_AWS_BOOTSTRAP }}
 
     steps:
       # -----------------------------------------------------------------------
@@ -54,13 +60,28 @@ jobs:
         continue-on-error: true
 
       - name: Fallback — Static creds (first-run bootstrap only)
-        if: ${{ steps.oidc-auth.outcome == 'failure' }}
+        id: static-auth
+        if: ${{ steps.oidc-auth.outcome == 'failure' && ((github.event_name == 'workflow_dispatch' && github.event.inputs.allow_static_fallback == 'true') || env.STATIC_AWS_BOOTSTRAP_ENABLED == 'true') }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
         continue-on-error: true
+
+      - name: Report AWS auth status
+        if: ${{ always() }}
+        run: |
+          if [ "${{ steps.oidc-auth.outcome }}" = "success" ]; then
+            echo "AWS auth mode: OIDC"
+          elif [ "${{ steps.static-auth.outcome }}" = "success" ]; then
+            echo "::warning::OIDC auth failed; using explicitly enabled static bootstrap credentials."
+          elif [ "${{ steps.oidc-auth.outcome }}" = "failure" ]; then
+            echo "::warning::OIDC auth failed; continuing without AWS credentials."
+            echo "::warning::Enable workflow_dispatch input allow_static_fallback=true or secret ENABLE_STATIC_AWS_BOOTSTRAP=true to permit one-time static bootstrap."
+          else
+            echo "AWS auth status unavailable."
+          fi
 
       # -----------------------------------------------------------------------
       # 3. Install Python deps
