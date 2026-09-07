@@ -61,7 +61,7 @@ jobs:
 
       - name: Fallback — Static creds (first-run bootstrap only)
         id: static-auth
-        if: ${{ steps.oidc-auth.outcome == 'failure' && ((github.event_name == 'workflow_dispatch' && github.event.inputs.allow_static_fallback == 'true') || env.STATIC_AWS_BOOTSTRAP_ENABLED == 'true') }}
+        if: ${{ steps.oidc-auth.outcome == 'failure' && github.event_name == 'workflow_dispatch' && github.event.inputs.allow_static_fallback == 'true' && env.STATIC_AWS_BOOTSTRAP_ENABLED == 'true' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -78,7 +78,7 @@ jobs:
             echo "::warning::OIDC auth failed; using explicitly enabled static bootstrap credentials."
           elif [ "${{ steps.oidc-auth.outcome }}" = "failure" ]; then
             echo "::warning::OIDC auth failed; continuing without AWS credentials."
-            echo "::warning::Enable workflow_dispatch input allow_static_fallback=true or secret ENABLE_STATIC_AWS_BOOTSTRAP=true to permit one-time static bootstrap."
+            echo "::warning::To permit one-time static bootstrap, run workflow_dispatch with allow_static_fallback=true and set ENABLE_STATIC_AWS_BOOTSTRAP=true."
           else
             echo "AWS auth status unavailable."
           fi
