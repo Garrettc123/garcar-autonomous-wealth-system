@@ -23,6 +23,10 @@ on:
         description: 'Set a key (format: KEY=value). Leave blank to just re-sync.'
         required: false
         default: ''
+      allow_static_fallback:
+        description: 'Temporarily allow static AWS bootstrap credentials if OIDC fails.'
+        required: false
+        default: 'false'
 
 permissions:
   id-token: write   # Required for OIDC
@@ -33,6 +37,8 @@ jobs:
     name: Zero-Key Provision & Self-Heal
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      STATIC_AWS_BOOTSTRAP_ENABLED: ${{ secrets.ENABLE_STATIC_AWS_BOOTSTRAP }}
 
     steps:
       # -----------------------------------------------------------------------
@@ -45,11 +51,37 @@ jobs:
       # 2. Authenticate to AWS via OIDC (NO static keys ever)
       # -----------------------------------------------------------------------
       - name: Configure AWS via OIDC
+        id: oidc-auth
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.OIDC_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
           role-session-name: garcar-zero-key-${{ github.run_id }}
+        continue-on-error: true
+
+      - name: Fallback — Static creds (first-run bootstrap only)
+        id: static-auth
+        if: ${{ steps.oidc-auth.outcome == 'failure' && github.event_name == 'workflow_dispatch' && github.event.inputs.allow_static_fallback == 'true' && env.STATIC_AWS_BOOTSTRAP_ENABLED == 'true' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+        continue-on-error: true
+
+      - name: Report AWS auth status
+        if: ${{ always() }}
+        run: |
+          if [ "${{ steps.oidc-auth.outcome }}" = "success" ]; then
+            echo "AWS auth mode: OIDC"
+          elif [ "${{ steps.static-auth.outcome }}" = "success" ]; then
+            echo "::warning::OIDC auth failed; using explicitly enabled static bootstrap credentials."
+          elif [ "${{ steps.oidc-auth.outcome }}" = "failure" ]; then
+            echo "::warning::OIDC auth failed; continuing without AWS credentials."
+            echo "::warning::To permit one-time static bootstrap, run workflow_dispatch with allow_static_fallback=true and set ENABLE_STATIC_AWS_BOOTSTRAP=true."
+          else
+            echo "AWS auth status unavailable."
+          fi
 
       # -----------------------------------------------------------------------
       # 3. Install Python deps
@@ -61,7 +93,7 @@ jobs:
       # 4. (Optional) Set a new key from workflow_dispatch input
       # -----------------------------------------------------------------------
       - name: Set key from dispatch input
-        if: ${{ github.event.inputs.set_key != '' }}
+        if: ${{ (steps.oidc-auth.outcome == 'success' || steps.static-auth.outcome == 'success') && github.event.inputs.set_key != '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -73,6 +105,7 @@ jobs:
       # 5. Run full provisioner (load SSM → provision infra → sync to GitHub)
       # -----------------------------------------------------------------------
       - name: Run Zero-Touch Provisioner
+        if: ${{ steps.oidc-auth.outcome == 'success' || steps.static-auth.outcome == 'success' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -89,5 +122,10 @@ jobs:
           echo "  Garcar Zero-Key run complete"
           echo "  $(date -u)"
           echo "====================================="
-          echo "All secrets synced SSM → GitHub Actions."
-          echo "OIDC role is active — no static AWS keys in use."
+          if [ "${{ steps.oidc-auth.outcome }}" = "success" ]; then
+            echo "AWS-authenticated provisioning completed with OIDC."
+          elif [ "${{ steps.static-auth.outcome }}" = "success" ]; then
+            echo "AWS-authenticated provisioning completed with explicitly enabled static bootstrap credentials."
+          else
+            echo "AWS authentication was unavailable, so AWS-dependent provisioning was skipped."
+          fi
