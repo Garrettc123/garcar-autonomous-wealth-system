@@ -93,7 +93,7 @@ jobs:
       # 4. (Optional) Set a new key from workflow_dispatch input
       # -----------------------------------------------------------------------
       - name: Set key from dispatch input
-        if: ${{ github.event.inputs.set_key != '' }}
+        if: ${{ (steps.oidc-auth.outcome == 'success' || steps.static-auth.outcome == 'success') && github.event.inputs.set_key != '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -105,6 +105,7 @@ jobs:
       # 5. Run full provisioner (load SSM → provision infra → sync to GitHub)
       # -----------------------------------------------------------------------
       - name: Run Zero-Touch Provisioner
+        if: ${{ steps.oidc-auth.outcome == 'success' || steps.static-auth.outcome == 'success' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -121,5 +122,10 @@ jobs:
           echo "  Garcar Zero-Key run complete"
           echo "  $(date -u)"
           echo "====================================="
-          echo "All secrets synced SSM → GitHub Actions."
-          echo "OIDC role is active — no static AWS keys in use."
+          if [ "${{ steps.oidc-auth.outcome }}" = "success" ]; then
+            echo "AWS-authenticated provisioning completed with OIDC."
+          elif [ "${{ steps.static-auth.outcome }}" = "success" ]; then
+            echo "AWS-authenticated provisioning completed with explicitly enabled static bootstrap credentials."
+          else
+            echo "AWS authentication was unavailable, so AWS-dependent provisioning was skipped."
+          fi
